@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <!-- serkin-landing build 20260819-f -->
-<meta name="build" content="20260823-max">
+<meta name="build" content="20260823-stock">
 <title>Серкин · Авто под ключ</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Пригоняю авто под ключ из Китая, Кореи и США — из Иркутска. Подбор, проверка (Carfax/ЛКП), доставка, растаможка, утиль, вручение ключей у подъезда. Цена под ключ известна заранее. Расчёт бесплатно — Евгений Серкин.">
@@ -419,6 +419,38 @@ _tmr.push({id: "3788808", type: "pageView", start: (new Date()).getTime()});
       </div>
     </div>
   </section>
+
+  <!-- В НАЛИЧИИ / динамически из кабинета /uchet/cars.json -->
+  <section id="stock" style="padding-top:0;display:none">
+    <div class="wrap">
+      <div class="shead">
+        <span class="eyebrow">Сейчас в работе</span>
+        <h2>Авто в наличии и в пути</h2>
+        <p class="lead">Машины, которые я подбираю и привожу прямо сейчас — список обновляется автоматически.</p>
+      </div>
+      <div class="cases" id="stock-cases"></div>
+    </div>
+  </section>
+  <script>
+  (function(){
+    var flags={'Китай':'🇨🇳','США':'🇺🇸','Корея':'🇰🇷','Япония':'🇯🇵'};
+    var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m];});};
+    var fmt=function(n){return (n?(Number(n).toLocaleString('ru-RU')+' ₽'):'цена по запросу');};
+    fetch('/uchet/cars.json?_='+Date.now()).then(function(r){return r.ok?r.json():null;}).then(function(d){
+      if(!d||!d.cars||!d.cars.length)return;
+      var box=document.getElementById('stock-cases');
+      d.cars.forEach(function(c){
+        var img=(c.photos&&c.photos[0])?'<img class="cimg" src="'+esc(c.photos[0])+'" alt="'+esc(c.name)+'">':'<span class="car">'+esc(c.name)+'</span>';
+        var flag=c.country?'<span class="flag">'+((flags[c.country]||'')+' '+esc(c.country)).trim()+'</span>':'';
+        var note=c.note?'<div class="meta"><span>'+esc(c.note)+'</span></div>':'';
+        var a=document.createElement('article');a.className='case';
+        a.innerHTML='<div class="ph">'+img+flag+'</div><div class="body"><h3>'+esc(c.name)+'</h3>'+note+'<div class="price"><span class="num">'+fmt(c.sale)+'</span><small>под ключ</small></div></div>';
+        box.appendChild(a);
+      });
+      document.getElementById('stock').style.display='';
+    }).catch(function(){});
+  })();
+  </script>
 
   <!-- QUOTE -->
   <section style="padding-block:clamp(40px,6vw,72px)">
