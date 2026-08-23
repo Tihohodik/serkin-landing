@@ -10,7 +10,7 @@ function write_json($f,$d){ global $GUARD; $r=@file_put_contents($f, $GUARD.json
 function tok(){ return bin2hex(random_bytes(8)); }
 
 // --- Генерация рекламных текстов через Claude API ---
-function claude_ads($key, $model, $c){
+function ai_ads($cfg, $c){
   $name = trim((string)($c['name'] ?? ''));
   if ($name === '') return ['err'=>'нет модели авто'];
   $facts = "Модель: $name\n";
@@ -27,22 +27,33 @@ function claude_ads($key, $model, $c){
     "instagram: цепляющий кэпшн 400–700 знаков, эмодзи, 5–8 хэштегов; без ссылок (в Instagram ссылки в тексте не кликаются).\n".
     "Пиши на русском.";
   $usr = "Данные автомобиля:\n$facts\nСгенерируй три рекламных поста об этом авто для Telegram, VK и Instagram.";
-  $payload = json_encode([
-    'model'=>$model, 'max_tokens'=>2000, 'system'=>$sys,
-    'messages'=>[['role'=>'user','content'=>$usr]],
-  ], JSON_UNESCAPED_UNICODE);
   if (!function_exists('curl_init')) return ['err'=>'на хостинге нет curl'];
-  $ch = curl_init('https://api.anthropic.com/v1/messages');
-  curl_setopt_array($ch, [
-    CURLOPT_POST=>true, CURLOPT_RETURNTRANSFER=>true, CURLOPT_TIMEOUT=>60,
-    CURLOPT_HTTPHEADER=>['content-type: application/json','x-api-key: '.$key,'anthropic-version: 2023-06-01'],
-    CURLOPT_POSTFIELDS=>$payload,
-  ]);
-  $res = curl_exec($ch); $cerr = curl_error($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
-  if ($res === false) return ['err'=>'сеть: '.($cerr ?: 'нет ответа (хостинг может блокировать исходящие)')];
-  if ($code !== 200) { $j = json_decode($res, true); $m = $j['error']['message'] ?? substr(strip_tags($res), 0, 180); return ['err'=>"API $code: $m"]; }
-  $j = json_decode($res, true);
-  $raw = $j['content'][0]['text'] ?? '';
+  $provider = strtolower((string)($cfg['provider'] ?? 'anthropic'));
+  $key = (string)($cfg['key'] ?? '');
+  $model = (string)($cfg['model'] ?? '');
+  if ($provider === 'openai') {
+    $base = rtrim((string)($cfg['base'] ?? ''), '/');
+    if ($base === '') return ['err'=>'не указан base для Qwen/openai-провайдера'];
+    if ($model === '') $model = 'qwen-plus';
+    $payload = json_encode(['model'=>$model,'max_tokens'=>2000,'messages'=>[['role'=>'system','content'=>$sys],['role'=>'user','content'=>$usr]]], JSON_UNESCAPED_UNICODE);
+    $ch = curl_init($base.'/chat/completions');
+    curl_setopt_array($ch, [CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_HTTPHEADER=>['content-type: application/json','authorization: Bearer '.$key],CURLOPT_POSTFIELDS=>$payload]);
+    $res = curl_exec($ch); $cerr = curl_error($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
+    if ($res === false) return ['err'=>'сеть: '.($cerr ?: 'нет ответа')];
+    $j = json_decode($res, true);
+    if ($code !== 200) { $m = $j['error']['message'] ?? substr(strip_tags((string)$res),0,180); return ['err'=>"API $code: $m"]; }
+    $raw = $j['choices'][0]['message']['content'] ?? '';
+  } else {
+    if ($model === '') $model = 'claude-haiku-4-5';
+    $payload = json_encode(['model'=>$model,'max_tokens'=>2000,'system'=>$sys,'messages'=>[['role'=>'user','content'=>$usr]]], JSON_UNESCAPED_UNICODE);
+    $ch = curl_init('https://api.anthropic.com/v1/messages');
+    curl_setopt_array($ch, [CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_HTTPHEADER=>['content-type: application/json','x-api-key: '.$key,'anthropic-version: 2023-06-01'],CURLOPT_POSTFIELDS=>$payload]);
+    $res = curl_exec($ch); $cerr = curl_error($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
+    if ($res === false) return ['err'=>'сеть: '.($cerr ?: 'нет ответа (хостинг может блокировать исходящие)')];
+    $j = json_decode($res, true);
+    if ($code !== 200) { $m = $j['error']['message'] ?? substr(strip_tags((string)$res),0,180); return ['err'=>"API $code: $m"]; }
+    $raw = $j['content'][0]['text'] ?? '';
+  }
   $clean = trim(preg_replace('/^```[a-z]*\s*|\s*```$/m', '', trim($raw)));
   $ads = json_decode($clean, true);
   if (!is_array($ads)) return ['ads'=>['telegram'=>$raw,'vk'=>'','instagram'=>''], 'err'=>'модель вернула не-JSON (текст в Telegram)'];
@@ -107,9 +118,9 @@ if (isset($_GET['action'])) {
     $cfgf=__DIR__.'/aiconfig.php';
     if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'nokey']); exit; }
     if(!defined('UCHET')) define('UCHET',1);
-    $cfg=@include $cfgf; $key=is_array($cfg)?($cfg['key']??''):''; $model=is_array($cfg)?($cfg['model']??'claude-haiku-4-5'):'claude-haiku-4-5';
-    if(!$key){ echo json_encode(['ok'=>false,'err'=>'nokey']); exit; }
-    $r=claude_ads($key,$model,($in['car']??[]));
+    $cfg=@include $cfgf; if(!is_array($cfg)) $cfg=[];
+    if(empty($cfg['key'])){ echo json_encode(['ok'=>false,'err'=>'nokey']); exit; }
+    $r=ai_ads($cfg,($in['car']??[]));
     if(isset($r['ads'])){ echo json_encode(['ok'=>true,'ads'=>$r['ads'],'note'=>($r['err']??null)]); exit; }
     echo json_encode(['ok'=>false,'err'=>'api','detail'=>($r['err']??'')]); exit;
   }
@@ -298,7 +309,8 @@ async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(
       <div><label>Прочее, ₽</label><input id="c_other" type="number" min="0" placeholder="0"></div>
       <div><label>Продажа (под ключ), ₽</label><input id="c_sale" type="number" min="0" placeholder="0"></div>
       <div style="grid-column:span 2"><label>Заметка</label><input id="c_note" placeholder="клиент, город, статус…"></div>
-      <div style="grid-column:span 2"><label>Фото авто (превью + для рекламы)</label><input id="c_photo" type="file" accept="image/*" onchange="pickPhoto(this)"><img id="c_photo_prev" alt="" style="display:none;max-height:52px;border-radius:6px;margin-top:6px"></div>
+      <div style="grid-column:span 2"><label>Фото авто (можно несколько — превью и реклама)</label><input id="c_photo" type="file" accept="image/*" multiple onchange="pickPhotos(this)"><div id="c_photo_prev" style="display:none;margin-top:6px"></div></div>
+      <div style="grid-column:span 2"><label>Публикация</label><label style="display:flex;align-items:center;gap:8px;font-size:14px;color:var(--ink);cursor:pointer;padding:9px 0"><input type="checkbox" id="c_publish" style="width:auto;margin:0"> Показывать это авто на лендинге</label></div>
       <div><button class="btn" id="carBtn" style="width:100%" onclick="addCar()">Добавить авто</button></div>
     </div></div>
     <div class="card tbl-wrap"><table><thead><tr>
@@ -362,15 +374,18 @@ let saveTimer=null;
 function save(){document.getElementById('saveHint').textContent='Сохранение…';clearTimeout(saveTimer);saveTimer=setTimeout(async()=>{const r=await api('save',DATA);document.getElementById('saveHint').textContent=r.ok?'Сохранено ✓':'Ошибка сохранения';},400);}
 function carCosts(c){return (+c.purchase||0)+(+c.delivery||0)+(+c.customs||0)+(+c.util||0)+(+c.other||0);}
 function carProfit(c){return (+c.sale||0)-carCosts(c);}
-function renderCars(){const b=document.getElementById('cars-body');b.innerHTML='';DATA.cars.forEach(c=>{const p=carProfit(c);const tr=document.createElement('tr');tr.innerHTML=`<td>${c.photo?`<img src="${esc(c.photo)}" alt="" style="height:30px;width:46px;object-fit:cover;border-radius:5px;vertical-align:middle;margin-right:7px">`:''}${esc(c.name)}</td><td>${esc(c.country||'')}</td><td>${esc(c.date||'')}</td><td class="num">${fmt(c.purchase)}</td><td class="num">${fmt(c.delivery)}</td><td class="num">${fmt(c.customs)}</td><td class="num">${fmt(c.util)}</td><td class="num">${fmt(c.other)}</td><td class="num">${fmt(carCosts(c))}</td><td class="num">${fmt(c.sale)}</td><td class="num ${p>=0?'profit-pos':'profit-neg'}">${fmt(p)}</td><td style="white-space:nowrap"><button class="btn-ghost btn-sm" onclick="editCar('${c.id}')">✎</button> <button class="btn-ghost btn-sm" onclick="genAds('${c.id}')">✨ Текст${c.ads&&(c.ads.telegram||c.ads.vk||c.ads.instagram)?' ✓':''}</button> <button class="del" onclick="delCar('${c.id}')">✕</button></td>`;b.appendChild(tr);});renderSummary();}
+function renderCars(){const b=document.getElementById('cars-body');b.innerHTML='';DATA.cars.forEach(c=>{const p=carProfit(c);const ps=carPhotos(c);const thumb=ps.length?`<img src="${esc(ps[0])}" alt="" style="height:30px;width:46px;object-fit:cover;border-radius:5px;vertical-align:middle;margin-right:7px">`:'';const more=ps.length>1?` <span style="font-size:11px;color:var(--faint)">+${ps.length-1}</span>`:'';const pub=c.publish?` <span class="badge admin" style="font-size:10px;padding:1px 6px">лендинг</span>`:'';const tr=document.createElement('tr');tr.innerHTML=`<td>${thumb}${esc(c.name)}${more}${pub}</td><td>${esc(c.country||'')}</td><td>${esc(c.date||'')}</td><td class="num">${fmt(c.purchase)}</td><td class="num">${fmt(c.delivery)}</td><td class="num">${fmt(c.customs)}</td><td class="num">${fmt(c.util)}</td><td class="num">${fmt(c.other)}</td><td class="num">${fmt(carCosts(c))}</td><td class="num">${fmt(c.sale)}</td><td class="num ${p>=0?'profit-pos':'profit-neg'}">${fmt(p)}</td><td style="white-space:nowrap"><button class="btn-ghost btn-sm" onclick="editCar('${c.id}')">✎</button> <button class="btn-ghost btn-sm" onclick="genAds('${c.id}')">✨ Текст${c.ads&&(c.ads.telegram||c.ads.vk||c.ads.instagram)?' ✓':''}</button> <button class="del" onclick="delCar('${c.id}')">✕</button></td>`;b.appendChild(tr);});renderSummary();}
 function renderExp(){const b=document.getElementById('exp-body');b.innerHTML='';DATA.expenses.forEach(e=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${esc(e.date||'')}</td><td>${esc(e.cat||'')}</td><td class="num">${fmt(e.amount)}</td><td>${esc(e.note||'')}</td><td><button class="del" onclick="delExp('${e.id}')">✕</button></td>`;b.appendChild(tr);});renderSummary();}
 function renderSummary(){const cp=DATA.cars.reduce((s,c)=>s+carProfit(c),0);const ex=DATA.expenses.reduce((s,e)=>s+(+e.amount||0),0);const net=cp-ex;document.getElementById('summary').innerHTML=`<div class="stat"><span>Машин в учёте</span><b>${DATA.cars.length}</b></div><div class="stat good"><span>Прибыль с машин</span><b>${fmt(cp)}</b></div><div class="stat bad"><span>Общие расходы</span><b>${fmt(ex)}</b></div><div class="stat ${net>=0?'acc':'bad'}"><span>Чистая прибыль</span><b>${fmt(net)}</b></div>`;}
-let editingCarId=null, pendingPhoto=null;
-function carFormData(){const g=id=>document.getElementById(id);return {name:g('c_name').value.trim(),country:g('c_country').value,date:g('c_date').value,purchase:+g('c_purchase').value||0,delivery:+g('c_delivery').value||0,customs:+g('c_customs').value||0,util:+g('c_util').value||0,other:+g('c_other').value||0,sale:+g('c_sale').value||0,note:g('c_note').value.trim()};}
-function clearCarForm(){const g=id=>document.getElementById(id);['c_name','c_purchase','c_delivery','c_customs','c_util','c_other','c_sale','c_note'].forEach(i=>g(i).value='');g('c_date').value=new Date().toISOString().slice(0,10);g('c_photo').value='';pendingPhoto=null;const p=g('c_photo_prev');p.style.display='none';p.src='';}
-function pickPhoto(inp){const f=inp.files&&inp.files[0];if(!f)return;const img=new Image();const rd=new FileReader();rd.onload=()=>{img.onload=()=>{const max=1200;let w=img.width,h=img.height;if(w>max||h>max){if(w>=h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}const cv=document.createElement('canvas');cv.width=w;cv.height=h;cv.getContext('2d').drawImage(img,0,0,w,h);pendingPhoto=cv.toDataURL('image/jpeg',0.82);const p=document.getElementById('c_photo_prev');p.src=pendingPhoto;p.style.display='block';};img.src=rd.result;};rd.readAsDataURL(f);}
-async function addCar(){const g=id=>document.getElementById(id);if(!g('c_name').value.trim()){g('c_name').focus();return;}const d=carFormData();let photoUrl=null;if(pendingPhoto){const btn=g('carBtn');const t0=btn.textContent;btn.textContent='Загрузка фото…';const r=await api('photo_up',{data:pendingPhoto});btn.textContent=t0;if(r.ok)photoUrl=r.url;else{alert('Фото не загрузилось: '+(r.err||''));return;}}if(editingCarId){const c=DATA.cars.find(x=>x.id===editingCarId);if(c){Object.assign(c,d);if(photoUrl)c.photo=photoUrl;}editingCarId=null;g('carBtn').textContent='Добавить авто';}else{const car={id:uid(),...d};if(photoUrl)car.photo=photoUrl;DATA.cars.unshift(car);}clearCarForm();renderCars();save();}
-function editCar(id){const c=DATA.cars.find(x=>x.id===id);if(!c)return;const el=x=>document.getElementById(x);el('c_name').value=c.name||'';el('c_country').value=c.country||'Китай';el('c_date').value=c.date||'';el('c_purchase').value=c.purchase||'';el('c_delivery').value=c.delivery||'';el('c_customs').value=c.customs||'';el('c_util').value=c.util||'';el('c_other').value=c.other||'';el('c_sale').value=c.sale||'';el('c_note').value=c.note||'';pendingPhoto=null;el('c_photo').value='';const p=el('c_photo_prev');if(c.photo){p.src=c.photo;p.style.display='block';}else{p.style.display='none';p.src='';}editingCarId=id;el('carBtn').textContent='Сохранить изменения';window.scrollTo({top:0,behavior:'smooth'});}
+let editingCarId=null, pendingPhotos=[], editingPhotos=[];
+function carFormData(){const g=id=>document.getElementById(id);return {name:g('c_name').value.trim(),country:g('c_country').value,date:g('c_date').value,purchase:+g('c_purchase').value||0,delivery:+g('c_delivery').value||0,customs:+g('c_customs').value||0,util:+g('c_util').value||0,other:+g('c_other').value||0,sale:+g('c_sale').value||0,note:g('c_note').value.trim(),publish:g('c_publish').checked};}
+function carPhotos(c){return (c.photos&&c.photos.length)?c.photos:(c.photo?[c.photo]:[]);}
+function renderPhotoPrev(){const box=document.getElementById('c_photo_prev');box.innerHTML='';const mk=(src,onx)=>{const w=document.createElement('span');w.style.cssText='position:relative;display:inline-block;margin:4px 8px 0 0';const im=document.createElement('img');im.src=src;im.style.cssText='height:54px;width:74px;object-fit:cover;border-radius:6px;display:block;border:1px solid var(--line)';const b=document.createElement('button');b.textContent='✕';b.type='button';b.style.cssText='position:absolute;top:-7px;right:-7px;background:#c0432c;color:#fff;border:0;border-radius:50%;width:19px;height:19px;font-size:11px;line-height:1;cursor:pointer;padding:0';b.onclick=onx;w.appendChild(im);w.appendChild(b);box.appendChild(w);};editingPhotos.forEach((u,i)=>mk(u,()=>{editingPhotos.splice(i,1);renderPhotoPrev();}));pendingPhotos.forEach((d,i)=>mk(d,()=>{pendingPhotos.splice(i,1);renderPhotoPrev();}));box.style.display=(editingPhotos.length||pendingPhotos.length)?'block':'none';}
+function clearCarForm(){const g=id=>document.getElementById(id);['c_name','c_purchase','c_delivery','c_customs','c_util','c_other','c_sale','c_note'].forEach(i=>g(i).value='');g('c_date').value=new Date().toISOString().slice(0,10);g('c_photo').value='';g('c_publish').checked=false;pendingPhotos=[];editingPhotos=[];renderPhotoPrev();}
+function downscale(file){return new Promise(res=>{const rd=new FileReader();rd.onload=()=>{const img=new Image();img.onload=()=>{const max=1200;let w=img.width,h=img.height;if(w>max||h>max){if(w>=h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}const cv=document.createElement('canvas');cv.width=w;cv.height=h;cv.getContext('2d').drawImage(img,0,0,w,h);res(cv.toDataURL('image/jpeg',0.82));};img.src=rd.result;};rd.readAsDataURL(file);});}
+async function pickPhotos(inp){const fs=Array.from(inp.files||[]);for(const f of fs){pendingPhotos.push(await downscale(f));}inp.value='';renderPhotoPrev();}
+async function addCar(){const g=id=>document.getElementById(id);if(!g('c_name').value.trim()){g('c_name').focus();return;}const d=carFormData();const btn=g('carBtn');let urls=[];if(pendingPhotos.length){const t0=btn.textContent;btn.textContent='Загрузка фото…';for(const dp of pendingPhotos){const r=await api('photo_up',{data:dp});if(!r.ok){alert('Фото не загрузилось: '+(r.err||''));btn.textContent=t0;return;}urls.push(r.url);}btn.textContent=t0;}const photos=editingPhotos.concat(urls);if(editingCarId){const c=DATA.cars.find(x=>x.id===editingCarId);if(c){Object.assign(c,d);c.photos=photos;delete c.photo;}editingCarId=null;btn.textContent='Добавить авто';}else{const car={id:uid(),...d};if(photos.length)car.photos=photos;DATA.cars.unshift(car);}clearCarForm();renderCars();save();}
+function editCar(id){const c=DATA.cars.find(x=>x.id===id);if(!c)return;const el=x=>document.getElementById(x);el('c_name').value=c.name||'';el('c_country').value=c.country||'Китай';el('c_date').value=c.date||'';el('c_purchase').value=c.purchase||'';el('c_delivery').value=c.delivery||'';el('c_customs').value=c.customs||'';el('c_util').value=c.util||'';el('c_other').value=c.other||'';el('c_sale').value=c.sale||'';el('c_note').value=c.note||'';el('c_publish').checked=!!c.publish;pendingPhotos=[];editingPhotos=carPhotos(c).slice();el('c_photo').value='';renderPhotoPrev();editingCarId=id;el('carBtn').textContent='Сохранить изменения';window.scrollTo({top:0,behavior:'smooth'});}
 function delCar(id){if(!confirm('Удалить авто?'))return;DATA.cars=DATA.cars.filter(c=>c.id!==id);renderCars();save();}
 function addExp(){const g=id=>document.getElementById(id);if(!(+g('e_amount').value)){g('e_amount').focus();return;}DATA.expenses.unshift({id:uid(),date:g('e_date').value,cat:g('e_cat').value,amount:+g('e_amount').value||0,note:g('e_note').value.trim()});['e_amount','e_note'].forEach(i=>g(i).value='');renderExp();save();}
 function delExp(id){if(!confirm('Удалить расход?'))return;DATA.expenses=DATA.expenses.filter(e=>e.id!==id);renderExp();save();}
