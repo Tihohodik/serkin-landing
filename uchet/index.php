@@ -1,5 +1,5 @@
 <?php
-// Serkin — закрытый учёт расходов. PHP 8.2. Мультипользователи + роли.
+// Serkin — закрытый учёт расходов. PHP 8.2. Пользователи с самостоятельной установкой пароля (invite/activate).
 session_start();
 $GUARD = "<?php http_response_code(403); die('Forbidden'); ?>\n";
 $AUTH_FILE = __DIR__ . '/auth.php';
@@ -7,34 +7,52 @@ $DATA_FILE = __DIR__ . '/store.php';
 
 function read_json($f){ if(!file_exists($f)) return null; $c=(string)file_get_contents($f); $p=strpos($c,"\n"); if($p!==false)$c=substr($c,$p+1); $d=json_decode($c,true); return is_array($d)?$d:null; }
 function write_json($f,$d){ global $GUARD; $r=@file_put_contents($f, $GUARD.json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT), LOCK_EX); return $r!==false; }
-function find_user($users,$login){ foreach($users as $u){ if(isset($u['login'])&&mb_strtolower($u['login'])===mb_strtolower(trim($login))) return $u; } return null; }
+function tok(){ return bin2hex(random_bytes(8)); }
 
 $auth = read_json($AUTH_FILE);
-// миграция старого одиночного пароля -> пользователь admin
-if ($auth && isset($auth['hash']) && !isset($auth['users'])) {
-  $auth = ['users'=>[['login'=>'admin','name'=>'Администратор','hash'=>$auth['hash'],'role'=>'admin','active'=>true]]];
+if ($auth && isset($auth['hash']) && !isset($auth['users'])) { // миграция старого одиночного пароля
+  $auth = ['users'=>[['login'=>'admin','name'=>'Администратор','hash'=>$auth['hash'],'role'=>'admin','active'=>true,'invite'=>null]]];
   write_json($AUTH_FILE, $auth);
 }
 $users = $auth['users'] ?? [];
+$idx_by_login = function($login) use (&$users){ foreach($users as $i=>$u){ if(isset($u['login'])&&mb_strtolower($u['login'])===mb_strtolower(trim($login))) return $i; } return -1; };
+$idx_by_invite = function($t) use (&$users){ if(!$t) return -1; foreach($users as $i=>$u){ if(!empty($u['invite'])&&hash_equals((string)$u['invite'],(string)$t)) return $i; } return -1; };
 
 // ---------- API ----------
 if (isset($_GET['action'])) {
   header('Content-Type: application/json; charset=utf-8');
   $a=$_GET['action']; $in=json_decode((string)file_get_contents('php://input'),true)?:[];
 
+  // Первый администратор задаёт СВОЙ пароль сам
   if ($a==='setup') {
     if (count($users)>0){ echo json_encode(['ok'=>false,'err'=>'already']); exit; }
     $login=trim((string)($in['login']??'')); $name=trim((string)($in['name']??'')); $pw=(string)($in['password']??'');
     if($login===''||mb_strlen($pw)<6){ echo json_encode(['ok'=>false,'err'=>'invalid']); exit; }
-    $u=['login'=>$login,'name'=>($name?:$login),'hash'=>password_hash($pw,PASSWORD_DEFAULT),'role'=>'admin','active'=>true];
+    $u=['login'=>$login,'name'=>($name?:$login),'hash'=>password_hash($pw,PASSWORD_DEFAULT),'role'=>'admin','active'=>true,'invite'=>null];
     if(!write_json($AUTH_FILE,['users'=>[$u]])){ echo json_encode(['ok'=>false,'err'=>'write']); exit; }
     $_SESSION['user']=['login'=>$u['login'],'name'=>$u['name'],'role'=>'admin'];
     echo json_encode(['ok'=>true]); exit;
   }
+  // Информация по приглашению (публично, секрет = токен)
+  if ($a==='invite_info') {
+    $i=$idx_by_invite($in['token']??''); if($i<0){ echo json_encode(['ok'=>false]); exit; }
+    echo json_encode(['ok'=>true,'login'=>$users[$i]['login'],'name'=>$users[$i]['name']]); exit;
+  }
+  // Пользователь сам задаёт пароль по приглашению
+  if ($a==='activate') {
+    $i=$idx_by_invite($in['token']??''); $pw=(string)($in['password']??'');
+    if($i<0){ echo json_encode(['ok'=>false,'err'=>'badtoken']); exit; }
+    if(mb_strlen($pw)<6){ echo json_encode(['ok'=>false,'err'=>'short']); exit; }
+    $users[$i]['hash']=password_hash($pw,PASSWORD_DEFAULT); $users[$i]['invite']=null; $users[$i]['active']=true;
+    if(!write_json($AUTH_FILE,['users'=>$users])){ echo json_encode(['ok'=>false,'err'=>'write']); exit; }
+    $_SESSION['user']=['login'=>$users[$i]['login'],'name'=>$users[$i]['name'],'role'=>$users[$i]['role']];
+    echo json_encode(['ok'=>true]); exit;
+  }
   if ($a==='login') {
-    $login=trim((string)($in['login']??'')); $pw=(string)($in['password']??'');
-    $u=find_user($users,$login);
-    if($u && ($u['active']??true) && password_verify($pw,$u['hash'])){ $_SESSION['user']=['login'=>$u['login'],'name'=>$u['name'],'role'=>$u['role']]; echo json_encode(['ok'=>true]); }
+    $i=$idx_by_login($in['login']??''); $pw=(string)($in['password']??'');
+    if($i<0){ echo json_encode(['ok'=>false]); exit; }
+    if(empty($users[$i]['hash'])){ echo json_encode(['ok'=>false,'err'=>'pending']); exit; }
+    if(($users[$i]['active']??true) && password_verify($pw,$users[$i]['hash'])){ $_SESSION['user']=['login'=>$users[$i]['login'],'name'=>$users[$i]['name'],'role'=>$users[$i]['role']]; echo json_encode(['ok'=>true]); }
     else echo json_encode(['ok'=>false]);
     exit;
   }
@@ -49,29 +67,39 @@ if (isset($_GET['action'])) {
   // --- только админ ---
   if ($me['role']!=='admin'){ http_response_code(403); echo json_encode(['ok'=>false,'err'=>'forbidden']); exit; }
 
-  if ($a==='users_list'){ echo json_encode(['ok'=>true,'users'=>array_map(fn($u)=>['login'=>$u['login'],'name'=>$u['name'],'role'=>$u['role'],'active'=>($u['active']??true)],$users)]); exit; }
+  if ($a==='users_list'){ echo json_encode(['ok'=>true,'users'=>array_map(fn($u)=>['login'=>$u['login'],'name'=>$u['name'],'role'=>$u['role'],'pending'=>empty($u['hash']),'invite'=>($u['invite']??null)],$users)]); exit; }
   if ($a==='user_add'){
-    $login=trim((string)($in['login']??'')); $name=trim((string)($in['name']??'')); $pw=(string)($in['password']??''); $role=(($in['role']??'user')==='admin')?'admin':'user';
-    if($login===''||mb_strlen($pw)<6){ echo json_encode(['ok'=>false,'err'=>'invalid']); exit; }
-    if(find_user($users,$login)){ echo json_encode(['ok'=>false,'err'=>'exists']); exit; }
-    $users[]=['login'=>$login,'name'=>($name?:$login),'hash'=>password_hash($pw,PASSWORD_DEFAULT),'role'=>$role,'active'=>true];
+    $login=trim((string)($in['login']??'')); $name=trim((string)($in['name']??'')); $role=(($in['role']??'user')==='admin')?'admin':'user';
+    if($login===''){ echo json_encode(['ok'=>false,'err'=>'invalid']); exit; }
+    if($idx_by_login($login)>=0){ echo json_encode(['ok'=>false,'err'=>'exists']); exit; }
+    $t=tok();
+    $users[]=['login'=>$login,'name'=>($name?:$login),'hash'=>null,'role'=>$role,'active'=>true,'invite'=>$t];
     if(!write_json($AUTH_FILE,['users'=>$users])){ echo json_encode(['ok'=>false,'err'=>'write']); exit; }
-    echo json_encode(['ok'=>true]); exit;
+    echo json_encode(['ok'=>true,'invite'=>$t]); exit;
+  }
+  if ($a==='user_reset'){
+    $i=$idx_by_login($in['login']??'');
+    if($i<0){ echo json_encode(['ok'=>false,'err'=>'nouser']); exit; }
+    if(mb_strtolower($users[$i]['login'])===mb_strtolower($me['login'])){ echo json_encode(['ok'=>false,'err'=>'self']); exit; }
+    $t=tok(); $users[$i]['hash']=null; $users[$i]['invite']=$t;
+    if(!write_json($AUTH_FILE,['users'=>$users])){ echo json_encode(['ok'=>false,'err'=>'write']); exit; }
+    echo json_encode(['ok'=>true,'invite'=>$t]); exit;
   }
   if ($a==='user_del'){
-    $login=trim((string)($in['login']??''));
-    if(mb_strtolower($login)===mb_strtolower($me['login'])){ echo json_encode(['ok'=>false,'err'=>'self']); exit; }
-    $target=find_user($users,$login);
-    $admins=array_filter($users,fn($u)=>$u['role']==='admin');
-    if($target && $target['role']==='admin' && count($admins)<=1){ echo json_encode(['ok'=>false,'err'=>'lastadmin']); exit; }
-    $users=array_values(array_filter($users,fn($u)=>mb_strtolower($u['login'])!==mb_strtolower($login)));
+    $i=$idx_by_login($in['login']??'');
+    if($i<0){ echo json_encode(['ok'=>false,'err'=>'nouser']); exit; }
+    if(mb_strtolower($users[$i]['login'])===mb_strtolower($me['login'])){ echo json_encode(['ok'=>false,'err'=>'self']); exit; }
+    $admins=array_filter($users,fn($u)=>$u['role']==='admin'&&!empty($u['hash']));
+    if($users[$i]['role']==='admin' && count($admins)<=1){ echo json_encode(['ok'=>false,'err'=>'lastadmin']); exit; }
+    array_splice($users,$i,1);
     if(!write_json($AUTH_FILE,['users'=>$users])){ echo json_encode(['ok'=>false,'err'=>'write']); exit; }
     echo json_encode(['ok'=>true]); exit;
   }
   echo json_encode(['ok'=>false]); exit;
 }
 
-$state = count($users)===0 ? 'setup' : (empty($_SESSION['user']) ? 'login' : 'app');
+$invite = $_GET['invite'] ?? '';
+$state = $invite!=='' ? 'activate' : (count($users)===0 ? 'setup' : (empty($_SESSION['user']) ? 'login' : 'app'));
 $isAdmin = !empty($_SESSION['user']) && $_SESSION['user']['role']==='admin';
 $meName = $_SESSION['user']['name'] ?? '';
 ?><!doctype html>
@@ -89,6 +117,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font
 button{font-family:inherit;cursor:pointer;border:0;border-radius:10px;padding:10px 16px;font-weight:650;font-size:14px}
 .btn{background:var(--accent);color:#fff}.btn:hover{filter:brightness(1.06)}
 .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
+.btn-sm{padding:6px 12px;font-size:13px}
 .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .tab{background:var(--card);border:1px solid var(--line);color:var(--muted);border-radius:20px;padding:8px 16px;font-weight:600}
 .tab.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
@@ -112,15 +141,18 @@ input:focus,select:focus{outline:2px solid color-mix(in srgb,var(--accent) 40%,t
 .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px}
 .badge.admin{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
 .badge.user{background:var(--line);color:var(--muted)}
+.badge.pend{background:#fdeede;color:#b06a1a}
 .center{min-height:100vh;display:grid;place-items:center;padding:20px}
 .login-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px;width:min(400px,92vw);text-align:center}
 .login-card h2{margin:0 0 6px}.login-card p{color:var(--muted);margin:0 0 18px;font-size:14px}
 .login-card input{margin-bottom:12px;text-align:left}
 .err{color:var(--bad);font-size:13px;min-height:18px}
-.hide{display:none}.save-hint{font-size:12.5px;color:var(--faint)}
+.hide{display:none}.save-hint{font-size:12.5px;color:var(--faint)}.muted{color:var(--muted)}
+.invbox{background:#fbf3e7;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13px}
+.invbox code{background:#fff;border:1px solid var(--line);border-radius:6px;padding:6px 8px;display:block;margin:6px 0;word-break:break-all;font-family:monospace}
 @media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.frm{grid-template-columns:repeat(2,1fr)}}
 </style></head><body>
-<?php if ($state==='setup' || $state==='login'): ?>
+<?php if ($state==='setup' || $state==='login' || $state==='activate'): ?>
 <div class="center"><div class="login-card">
   <h2>Serkin · <span style="color:var(--accent)">Учёт</span></h2>
   <?php if ($state==='setup'): ?>
@@ -131,6 +163,13 @@ input:focus,select:focus{outline:2px solid color-mix(in srgb,var(--accent) 40%,t
     <input id="pw2" type="password" placeholder="Повторите пароль" autocomplete="new-password">
     <div class="err" id="err"></div>
     <button class="btn" style="width:100%" onclick="doSetup()">Создать администратора</button>
+  <?php elseif ($state==='activate'): ?>
+    <p id="actHi">Установка пароля…</p>
+    <input id="pw" type="password" placeholder="Придумайте пароль" autocomplete="new-password">
+    <input id="pw2" type="password" placeholder="Повторите пароль" autocomplete="new-password">
+    <div class="err" id="err"></div>
+    <button class="btn" style="width:100%" onclick="doActivate()">Сохранить пароль и войти</button>
+    <script>const INVITE=<?=json_encode($invite)?>;</script>
   <?php else: ?>
     <p>Вход в учёт расходов.</p>
     <input id="login" placeholder="Логин" autocomplete="username">
@@ -141,8 +180,10 @@ input:focus,select:focus{outline:2px solid color-mix(in srgb,var(--accent) 40%,t
 </div></div>
 <script>
 async function api(a,b){const r=await fetch('?action='+a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return r.json();}
-async function doSetup(){const l=login.value.trim(),n=name.value.trim(),p=pw.value,p2=pw2.value;err.textContent='';if(!l){err.textContent='Введите логин';return;}if(p.length<6){err.textContent='Пароль минимум 6 символов';return;}if(p!==p2){err.textContent='Пароли не совпадают';return;}const r=await api('setup',{login:l,name:n,password:p});if(r.ok)location.reload();else err.textContent='Ошибка: '+(r.err||'');}
-async function doLogin(){err.textContent='';const r=await api('login',{login:login.value.trim(),password:pw.value});if(r.ok)location.reload();else err.textContent='Неверный логин или пароль';}
+async function doSetup(){const l=login.value.trim(),n=name.value.trim(),p=pw.value,p2=pw2.value;err.textContent='';if(!l){err.textContent='Введите логин';return;}if(p.length<6){err.textContent='Пароль минимум 6 символов';return;}if(p!==p2){err.textContent='Пароли не совпадают';return;}const r=await api('setup',{login:l,name:n,password:p});if(r.ok)location.href=location.pathname;else err.textContent='Ошибка: '+(r.err||'');}
+async function doLogin(){err.textContent='';const r=await api('login',{login:login.value.trim(),password:pw.value});if(r.ok)location.reload();else err.textContent=r.err==='pending'?'Аккаунт не активирован — откройте ссылку-приглашение':'Неверный логин или пароль';}
+async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(p.length<6){err.textContent='Пароль минимум 6 символов';return;}if(p!==p2){err.textContent='Пароли не совпадают';return;}const r=await api('activate',{token:INVITE,password:p});if(r.ok)location.href=location.pathname;else err.textContent=r.err==='badtoken'?'Ссылка недействительна или уже использована':'Ошибка';}
+<?php if($state==='activate'): ?>(async()=>{const r=await api('invite_info',{token:INVITE});const hi=document.getElementById('actHi');if(r.ok)hi.textContent='Здравствуйте, '+r.name+'! Придумайте пароль для входа (мин. 6 символов).';else{hi.textContent='Ссылка недействительна или уже использована.';document.getElementById('pw').disabled=true;document.getElementById('pw2').disabled=true;}})();<?php endif; ?>
 </script>
 <?php else: ?>
 <div class="wrap">
@@ -151,7 +192,7 @@ async function doLogin(){err.textContent='';const r=await api('login',{login:log
     <div style="display:flex;gap:10px;align-items:center">
       <span class="save-hint" id="saveHint">Сохранено ✓</span>
       <span class="muted" style="font-size:13px"><?=htmlspecialchars($meName)?></span>
-      <button class="btn-ghost" onclick="logout()">Выйти</button>
+      <button class="btn-ghost btn-sm" onclick="logout()">Выйти</button>
     </div>
   </div>
   <div class="grid" id="summary"></div>
@@ -193,15 +234,17 @@ async function doLogin(){err.textContent='';const r=await api('login',{login:log
 
   <?php if($isAdmin): ?>
   <div id="pane-users" class="hide">
-    <div class="card"><div class="frm">
+    <div class="card"><div class="frm" style="grid-template-columns:repeat(3,1fr) auto">
       <div><label>Логин</label><input id="u_login" placeholder="ivan"></div>
       <div><label>Имя</label><input id="u_name" placeholder="Иван"></div>
-      <div><label>Пароль</label><input id="u_pw" type="password" placeholder="мин. 6 символов" autocomplete="new-password"></div>
       <div><label>Роль</label><select id="u_role"><option value="user">Пользователь</option><option value="admin">Администратор</option></select></div>
-      <div><button class="btn" style="width:100%" onclick="addUser()">Добавить пользователя</button></div>
-    </div><div class="err" id="u_err" style="margin-top:8px"></div></div>
-    <div class="card tbl-wrap"><table><thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
-    <p class="muted" style="font-size:13px">Админ управляет пользователями. Пользователь видит и ведёт учёт, но не управляет доступом. Данные общие для всех.</p>
+      <div><button class="btn" onclick="addUser()">Создать</button></div>
+    </div>
+    <div class="err" id="u_err" style="margin-top:8px"></div>
+    <div class="invbox hide" id="invbox"></div>
+    <p class="muted" style="font-size:13px;margin-bottom:0">Пароль пользователь задаёт сам по ссылке-приглашению — вы его не знаете.</p>
+    </div>
+    <div class="card tbl-wrap"><table><thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Статус</th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
   </div>
 
   <div id="pane-settings" class="hide">
@@ -214,12 +257,16 @@ async function doLogin(){err.textContent='';const r=await api('login',{login:log
       <div id="cats-list" style="margin-top:14px;display:flex;flex-wrap:wrap;gap:8px"></div>
     </div>
     <p class="muted" style="font-size:13px">Категории используются в «Общих расходах». Изменения видят все. Позже сюда добавим и другие настройки.</p>
+    <p class="muted" style="font-size:13px"><b>Забыли пароль администратора?</b> Зайдите на сервер по SSH и выполните:<br>
+      <code style="background:#fff;border:1px solid var(--line);border-radius:6px;padding:6px 8px;display:inline-block;margin-top:4px;font-family:monospace">php /home/c/cg146190/public_html/uchet/reset.php ЛОГИН</code><br>
+      Команда выдаст ссылку — по ней зададите новый пароль. В веб-браузере этот скрипт не работает.</p>
   </div>
   <?php endif; ?>
 </div>
 
 <script>
 const IS_ADMIN=<?=$isAdmin?'true':'false'?>;
+const INVBASE=location.origin+location.pathname.replace(/[^/]*$/,'');
 let DATA={cars:[],expenses:[]};
 const fmt=n=>((+n||0).toLocaleString('ru-RU'))+' ₽';
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
@@ -238,8 +285,11 @@ function delCar(id){if(!confirm('Удалить авто?'))return;DATA.cars=DAT
 function addExp(){const g=id=>document.getElementById(id);if(!(+g('e_amount').value)){g('e_amount').focus();return;}DATA.expenses.unshift({id:uid(),date:g('e_date').value,cat:g('e_cat').value,amount:+g('e_amount').value||0,note:g('e_note').value.trim()});['e_amount','e_note'].forEach(i=>g(i).value='');renderExp();save();}
 function delExp(id){if(!confirm('Удалить расход?'))return;DATA.expenses=DATA.expenses.filter(e=>e.id!==id);renderExp();save();}
 function tab(t){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.t===t));document.getElementById('pane-cars').classList.toggle('hide',t!=='cars');document.getElementById('pane-exp').classList.toggle('hide',t!=='exp');const pu=document.getElementById('pane-users');if(pu)pu.classList.toggle('hide',t!=='users');const ps=document.getElementById('pane-settings');if(ps)ps.classList.toggle('hide',t!=='settings');if(t==='users')loadUsers();if(t==='settings')renderCats();}
-async function loadUsers(){const r=await api('users_list');if(!r.ok)return;const b=document.getElementById('users-body');b.innerHTML='';r.users.forEach(u=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${esc(u.name)}</td><td>${esc(u.login)}</td><td><span class="badge ${u.role}">${u.role==='admin'?'Админ':'Пользователь'}</span></td><td><button class="del" title="Удалить" onclick="delUser('${esc(u.login)}')">✕</button></td>`;b.appendChild(tr);});}
-async function addUser(){const g=id=>document.getElementById(id);const err=document.getElementById('u_err');err.textContent='';const login=g('u_login').value.trim(),name=g('u_name').value.trim(),pw=g('u_pw').value,role=g('u_role').value;if(!login){err.textContent='Введите логин';return;}if(pw.length<6){err.textContent='Пароль минимум 6 символов';return;}const r=await api('user_add',{login,name,password:pw,role});if(r.ok){['u_login','u_name','u_pw'].forEach(i=>g(i).value='');loadUsers();}else{err.textContent={exists:'Такой логин уже есть',invalid:'Проверьте логин и пароль',write:'Ошибка записи'}[r.err]||'Ошибка';}}
+function showInvite(login,token){const box=document.getElementById('invbox');box.classList.remove('hide');const url=INVBASE+'?invite='+token;box.innerHTML='Ссылка для установки пароля для <b>'+esc(login)+'</b> (отправьте её пользователю):<code id="invurl">'+esc(url)+'</code><button class="btn btn-sm" onclick="copyInv()">Скопировать ссылку</button>';}
+function copyInv(){const t=document.getElementById('invurl').textContent;navigator.clipboard.writeText(t).then(()=>{},()=>{});const b=event.target;b.textContent='Скопировано ✓';setTimeout(()=>b.textContent='Скопировать ссылку',1500);}
+async function loadUsers(){const r=await api('users_list');if(!r.ok)return;const b=document.getElementById('users-body');b.innerHTML='';r.users.forEach(u=>{const tr=document.createElement('tr');const status=u.pending?'<span class="badge pend">ожидает пароль</span>':'<span class="badge user">активен</span>';const acts=(u.pending&&u.invite?`<button class="btn-ghost btn-sm" onclick="showInvite('${esc(u.login)}','${esc(u.invite)}')">Ссылка</button> `:`<button class="btn-ghost btn-sm" onclick="resetUser('${esc(u.login)}')">Сбросить пароль</button> `)+`<button class="del" onclick="delUser('${esc(u.login)}')">✕</button>`;tr.innerHTML=`<td>${esc(u.name)}</td><td>${esc(u.login)}</td><td><span class="badge ${u.role}">${u.role==='admin'?'Админ':'Пользователь'}</span></td><td>${status}</td><td>${acts}</td>`;b.appendChild(tr);});}
+async function addUser(){const g=id=>document.getElementById(id);const err=document.getElementById('u_err');err.textContent='';const login=g('u_login').value.trim(),name=g('u_name').value.trim(),role=g('u_role').value;if(!login){err.textContent='Введите логин';return;}const r=await api('user_add',{login,name,role});if(r.ok){['u_login','u_name'].forEach(i=>g(i).value='');loadUsers();showInvite(login,r.invite);}else{err.textContent={exists:'Такой логин уже есть',invalid:'Проверьте логин',write:'Ошибка записи'}[r.err]||'Ошибка';}}
+async function resetUser(login){if(!confirm('Сбросить пароль пользователя '+login+'? Он задаст новый по ссылке.'))return;const r=await api('user_reset',{login});if(r.ok){loadUsers();showInvite(login,r.invite);}else alert({self:'Свой пароль сбросьте через SSH (reset.php)'}[r.err]||'Ошибка');}
 async function delUser(login){if(!confirm('Удалить пользователя '+login+'?'))return;const r=await api('user_del',{login});if(r.ok)loadUsers();else alert({self:'Нельзя удалить самого себя',lastadmin:'Нельзя удалить последнего админа'}[r.err]||'Ошибка');}
 function renderCatSelect(){const sel=document.getElementById('e_cat');if(!sel)return;const cur=sel.value;sel.innerHTML='';(DATA.categories||[]).forEach(c=>{const o=document.createElement('option');o.textContent=c;sel.appendChild(o);});if(cur&&(DATA.categories||[]).includes(cur))sel.value=cur;}
 function renderCats(){const box=document.getElementById('cats-list');if(!box)return;box.innerHTML='';(DATA.categories||[]).forEach((c,i)=>{const chip=document.createElement('span');chip.className='badge user';chip.style.cssText='display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:6px 10px';chip.innerHTML=esc(c)+' <button class="del" style="font-size:14px;padding:0 2px" onclick="delCat('+i+')">✕</button>';box.appendChild(chip);});}
