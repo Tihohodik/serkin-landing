@@ -35,9 +35,12 @@ function ai_ads($cfg, $c){
     $base = rtrim((string)($cfg['base'] ?? ''), '/');
     if ($base === '') return ['err'=>'не указан base для Qwen/openai-провайдера'];
     if ($model === '') $model = 'qwen-plus';
+    $authScheme = (string)($cfg['auth'] ?? 'Bearer');
+    $hdr = ['content-type: application/json','authorization: '.$authScheme.' '.$key];
+    if (!empty($cfg['folder'])) $hdr[] = 'x-folder-id: '.$cfg['folder'];
     $payload = json_encode(['model'=>$model,'max_tokens'=>2000,'messages'=>[['role'=>'system','content'=>$sys],['role'=>'user','content'=>$usr]]], JSON_UNESCAPED_UNICODE);
     $ch = curl_init($base.'/chat/completions');
-    curl_setopt_array($ch, [CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_HTTPHEADER=>['content-type: application/json','authorization: Bearer '.$key],CURLOPT_POSTFIELDS=>$payload]);
+    curl_setopt_array($ch, [CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_HTTPHEADER=>$hdr,CURLOPT_POSTFIELDS=>$payload]);
     $res = curl_exec($ch); $cerr = curl_error($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
     if ($res === false) return ['err'=>'сеть: '.($cerr ?: 'нет ответа')];
     $j = json_decode($res, true);
