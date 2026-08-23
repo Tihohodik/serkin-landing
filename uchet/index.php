@@ -2,12 +2,13 @@
 // Serkin — закрытый учёт расходов. PHP 8.2 (Timeweb).
 // Данные и пароль хранятся ВЫШЕ публичной папки (не скачать по ссылке).
 session_start();
-$BASE = dirname(__DIR__, 2); // /home/c/cgXXXXX  (public_html/uchet -> на два уровня выше)
-$AUTH_FILE = $BASE . '/uchet_auth.json';
-$DATA_FILE = $BASE . '/uchet_store.json';
+// Данные лежат в этой же папке, но защищены PHP-заглушкой (по прямой ссылке -> 403).
+$GUARD = "<?php http_response_code(403); die('Forbidden'); ?>\n";
+$AUTH_FILE = __DIR__ . '/auth.php';
+$DATA_FILE = __DIR__ . '/store.php';
 
-function read_json($f){ if(!file_exists($f)) return null; $d=json_decode((string)file_get_contents($f), true); return is_array($d)?$d:null; }
-function write_json($f,$d){ file_put_contents($f, json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT), LOCK_EX); }
+function read_json($f){ if(!file_exists($f)) return null; $c=(string)file_get_contents($f); $p=strpos($c,"\n"); if($p!==false)$c=substr($c,$p+1); $d=json_decode($c,true); return is_array($d)?$d:null; }
+function write_json($f,$d){ global $GUARD; $r=@file_put_contents($f, $GUARD.json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT), LOCK_EX); return $r!==false; }
 
 $auth = read_json($AUTH_FILE);
 
@@ -21,7 +22,7 @@ if (isset($_GET['action'])) {
     if ($auth) { echo json_encode(['ok'=>false,'err'=>'already']); exit; }
     $pw = (string)($in['password'] ?? '');
     if (mb_strlen($pw) < 6) { echo json_encode(['ok'=>false,'err'=>'short']); exit; }
-    write_json($AUTH_FILE, ['hash'=>password_hash($pw, PASSWORD_DEFAULT)]);
+    if (!write_json($AUTH_FILE, ['hash'=>password_hash($pw, PASSWORD_DEFAULT)])) { echo json_encode(['ok'=>false,'err'=>'write']); exit; }
     $_SESSION['ok']=true; echo json_encode(['ok'=>true]); exit;
   }
   if ($a === 'login') {
@@ -36,8 +37,8 @@ if (isset($_GET['action'])) {
 
   if ($a === 'load') { echo json_encode(['ok'=>true,'data'=>(read_json($DATA_FILE) ?: ['cars'=>[],'expenses'=>[]])]); exit; }
   if ($a === 'save') {
-    write_json($DATA_FILE, ['cars'=>($in['cars']??[]), 'expenses'=>($in['expenses']??[])]);
-    echo json_encode(['ok'=>true]); exit;
+    $ok = write_json($DATA_FILE, ['cars'=>($in['cars']??[]), 'expenses'=>($in['expenses']??[])]);
+    echo json_encode(['ok'=>$ok, 'err'=>$ok?null:'write']); exit;
   }
   echo json_encode(['ok'=>false]); exit;
 }
