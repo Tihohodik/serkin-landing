@@ -246,7 +246,7 @@ async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(
   </div>
   <div class="grid" id="summary"></div>
 
-  <div id="adModal" class="hide" style="position:fixed;inset:0;background:rgba(30,20,12,.5);z-index:50;display:grid;place-items:center;padding:16px">
+  <div id="adModal" style="position:fixed;inset:0;background:rgba(30,20,12,.5);z-index:50;display:none;place-items:center;padding:16px">
     <div class="card" style="width:min(700px,96vw);max-height:92vh;overflow:auto;margin:0">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
         <b id="ad_title">Объявление</b>
@@ -363,8 +363,8 @@ async function addUser(){const g=id=>document.getElementById(id);const err=docum
 async function resetUser(login){if(!confirm('Сбросить пароль пользователя '+login+'? Он задаст новый по ссылке.'))return;const r=await api('user_reset',{login});if(r.ok){loadUsers();showInvite(login,r.invite);}else alert({self:'Свой пароль сбросьте через SSH (reset.php)'}[r.err]||'Ошибка');}
 async function delUser(login){if(!confirm('Удалить пользователя '+login+'?'))return;const r=await api('user_del',{login});if(r.ok)loadUsers();else alert({self:'Нельзя удалить самого себя',lastadmin:'Нельзя удалить последнего админа'}[r.err]||'Ошибка');}
 let adCarId=null, adData={telegram:'',vk:'',instagram:''}, adTabCur='telegram';
-function openAdModal(){document.getElementById('adModal').classList.remove('hide');}
-function closeAds(){document.getElementById('adModal').classList.add('hide');adCarId=null;}
+function openAdModal(){document.getElementById('adModal').style.display='grid';}
+function closeAds(){document.getElementById('adModal').style.display='none';adCarId=null;}
 function fillAd(){document.getElementById('ad_text').value=adData[adTabCur]||'';}
 function adTab(t){adData[adTabCur]=document.getElementById('ad_text').value;adTabCur=t;document.querySelectorAll('#adModal .tab').forEach(x=>x.classList.toggle('active',x.dataset.at===t));fillAd();}
 async function genAds(id){const c=DATA.cars.find(x=>x.id===id);if(!c)return;adCarId=id;adTabCur='telegram';document.querySelectorAll('#adModal .tab').forEach(x=>x.classList.toggle('active',x.dataset.at==='telegram'));document.getElementById('ad_title').textContent='Объявление · '+c.name;document.getElementById('ad_hint').textContent='';openAdModal();if(c.ads&&(c.ads.telegram||c.ads.vk||c.ads.instagram)){adData={telegram:c.ads.telegram||'',vk:c.ads.vk||'',instagram:c.ads.instagram||''};fillAd();}else{await doGen(c);}}
