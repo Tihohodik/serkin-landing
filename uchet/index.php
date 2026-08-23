@@ -9,6 +9,45 @@ function read_json($f){ if(!file_exists($f)) return null; $c=(string)file_get_co
 function write_json($f,$d){ global $GUARD; $r=@file_put_contents($f, $GUARD.json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT), LOCK_EX); return $r!==false; }
 function tok(){ return bin2hex(random_bytes(8)); }
 
+// --- Генерация рекламных текстов через Claude API ---
+function claude_ads($key, $model, $c){
+  $name = trim((string)($c['name'] ?? ''));
+  if ($name === '') return null;
+  $facts = "Модель: $name\n";
+  $map = ['country'=>'Страна вывоза','sale'=>'Цена под ключ, ₽','note'=>'Заметка/контекст'];
+  foreach ($map as $k=>$lbl){ if (!empty($c[$k])) $facts .= "$lbl: " . trim((string)$c[$k]) . "\n"; }
+  $sys = "Ты — маркетолог автоподбора под ключ бренда «Евгений Серкин» (Иркутск). Пишешь тёплые, человечные посты о конкретном привезённом авто.\n".
+    "Тон: «клуб, а не магазин» — клиенты приходят по рекомендации и становятся друзьями. Без канцелярита и агрессивных продаж, по-доброму и с заботой, от первого лица (я подобрал, я привёз).\n".
+    "Услуга: подбор и доставка авто из-за границы под ключ (выбор → выкуп → доставка → растаможка → утильсбор → пригон к дому). Упор — Китай и Америка.\n".
+    "Слоган бренда, который можно мягко обыгрывать: «Подбираю · проверяю · доставляю · вручаю… скучаю…».\n".
+    "СТРОГИЕ ПРАВИЛА: не выдумывай характеристики, которых нет в данных; никогда не упоминай себестоимость, наценку или прибыль; если цена не указана — пиши «цена под ключ — по запросу». Призыв — написать Евгению в личку/Telegram.\n".
+    "Верни СТРОГО JSON без markdown-обёрток и без текста вокруг: {\"telegram\":\"...\",\"vk\":\"...\",\"instagram\":\"...\"}.\n".
+    "telegram: 500–800 знаков, уместные эмодзи, короткие абзацы, в конце призыв и 3–5 хэштегов.\n".
+    "vk: 600–1000 знаков, чуть спокойнее, призыв и 3–5 хэштегов.\n".
+    "instagram: цепляющий кэпшн 400–700 знаков, эмодзи, 5–8 хэштегов; без ссылок (в Instagram ссылки в тексте не кликаются).\n".
+    "Пиши на русском.";
+  $usr = "Данные автомобиля:\n$facts\nСгенерируй три рекламных поста об этом авто для Telegram, VK и Instagram.";
+  $payload = json_encode([
+    'model'=>$model, 'max_tokens'=>2000, 'system'=>$sys,
+    'messages'=>[['role'=>'user','content'=>$usr]],
+  ], JSON_UNESCAPED_UNICODE);
+  if (!function_exists('curl_init')) return null;
+  $ch = curl_init('https://api.anthropic.com/v1/messages');
+  curl_setopt_array($ch, [
+    CURLOPT_POST=>true, CURLOPT_RETURNTRANSFER=>true, CURLOPT_TIMEOUT=>60,
+    CURLOPT_HTTPHEADER=>['content-type: application/json','x-api-key: '.$key,'anthropic-version: 2023-06-01'],
+    CURLOPT_POSTFIELDS=>$payload,
+  ]);
+  $res = curl_exec($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
+  if ($res === false || $code !== 200) return null;
+  $j = json_decode($res, true);
+  $txt = $j['content'][0]['text'] ?? '';
+  $txt = trim(preg_replace('/^```[a-z]*\s*|\s*```$/m', '', trim($txt)));
+  $ads = json_decode($txt, true);
+  if (!is_array($ads)) return null;
+  return ['telegram'=>(string)($ads['telegram']??''),'vk'=>(string)($ads['vk']??''),'instagram'=>(string)($ads['instagram']??'')];
+}
+
 $auth = read_json($AUTH_FILE);
 if ($auth && isset($auth['hash']) && !isset($auth['users'])) { // миграция старого одиночного пароля
   $auth = ['users'=>[['login'=>'admin','name'=>'Администратор','hash'=>$auth['hash'],'role'=>'admin','active'=>true,'invite'=>null]]];
@@ -63,6 +102,16 @@ if (isset($_GET['action'])) {
 
   if ($a==='load'){ echo json_encode(['ok'=>true,'data'=>(read_json($DATA_FILE)?:['cars'=>[],'expenses'=>[]])]); exit; }
   if ($a==='save'){ $ok=write_json($DATA_FILE,['cars'=>($in['cars']??[]),'expenses'=>($in['expenses']??[])]); echo json_encode(['ok'=>$ok,'err'=>$ok?null:'write']); exit; }
+  if ($a==='gen_ads'){
+    $cfgf=__DIR__.'/aiconfig.php';
+    if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'nokey']); exit; }
+    if(!defined('UCHET')) define('UCHET',1);
+    $cfg=@include $cfgf; $key=is_array($cfg)?($cfg['key']??''):''; $model=is_array($cfg)?($cfg['model']??'claude-haiku-4-5'):'claude-haiku-4-5';
+    if(!$key){ echo json_encode(['ok'=>false,'err'=>'nokey']); exit; }
+    $ads=claude_ads($key,$model,($in['car']??[]));
+    if($ads===null){ echo json_encode(['ok'=>false,'err'=>'api']); exit; }
+    echo json_encode(['ok'=>true,'ads'=>$ads]); exit;
+  }
 
   // --- только админ ---
   if ($me['role']!=='admin'){ http_response_code(403); echo json_encode(['ok'=>false,'err'=>'forbidden']); exit; }
@@ -196,6 +245,28 @@ async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(
     </div>
   </div>
   <div class="grid" id="summary"></div>
+
+  <div id="adModal" class="hide" style="position:fixed;inset:0;background:rgba(30,20,12,.5);z-index:50;display:grid;place-items:center;padding:16px">
+    <div class="card" style="width:min(700px,96vw);max-height:92vh;overflow:auto;margin:0">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
+        <b id="ad_title">Объявление</b>
+        <button class="del" onclick="closeAds()">✕</button>
+      </div>
+      <div class="tabs" style="margin-bottom:10px">
+        <button class="tab active" data-at="telegram" onclick="adTab('telegram')">Telegram</button>
+        <button class="tab" data-at="vk" onclick="adTab('vk')">VK</button>
+        <button class="tab" data-at="instagram" onclick="adTab('instagram')">Instagram</button>
+      </div>
+      <div id="ad_loading" class="muted hide" style="padding:24px 0;text-align:center">✨ Генерирую тексты… (5–15 сек)</div>
+      <textarea id="ad_text" style="width:100%;min-height:250px;font-family:inherit;font-size:14px;line-height:1.5;padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);resize:vertical"></textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+        <button class="btn btn-sm" onclick="copyAd()">Скопировать</button>
+        <button class="btn-ghost btn-sm" onclick="regenAds()">✨ Заново</button>
+        <button class="btn-ghost btn-sm" onclick="saveAds()">Сохранить в карточке</button>
+        <span class="save-hint" id="ad_hint"></span>
+      </div>
+    </div>
+  </div>
   <div class="tabs">
     <button class="tab active" data-t="cars" onclick="tab('cars')">🚗 Машины</button>
     <button class="tab" data-t="exp" onclick="tab('exp')">📋 Общие расходы</button>
@@ -277,7 +348,7 @@ let saveTimer=null;
 function save(){document.getElementById('saveHint').textContent='Сохранение…';clearTimeout(saveTimer);saveTimer=setTimeout(async()=>{const r=await api('save',DATA);document.getElementById('saveHint').textContent=r.ok?'Сохранено ✓':'Ошибка сохранения';},400);}
 function carCosts(c){return (+c.purchase||0)+(+c.delivery||0)+(+c.customs||0)+(+c.util||0)+(+c.other||0);}
 function carProfit(c){return (+c.sale||0)-carCosts(c);}
-function renderCars(){const b=document.getElementById('cars-body');b.innerHTML='';DATA.cars.forEach(c=>{const p=carProfit(c);const tr=document.createElement('tr');tr.innerHTML=`<td>${esc(c.name)}</td><td>${esc(c.country||'')}</td><td>${esc(c.date||'')}</td><td class="num">${fmt(c.purchase)}</td><td class="num">${fmt(c.delivery)}</td><td class="num">${fmt(c.customs)}</td><td class="num">${fmt(c.util)}</td><td class="num">${fmt(c.other)}</td><td class="num">${fmt(carCosts(c))}</td><td class="num">${fmt(c.sale)}</td><td class="num ${p>=0?'profit-pos':'profit-neg'}">${fmt(p)}</td><td><button class="del" onclick="delCar('${c.id}')">✕</button></td>`;b.appendChild(tr);});renderSummary();}
+function renderCars(){const b=document.getElementById('cars-body');b.innerHTML='';DATA.cars.forEach(c=>{const p=carProfit(c);const tr=document.createElement('tr');tr.innerHTML=`<td>${esc(c.name)}</td><td>${esc(c.country||'')}</td><td>${esc(c.date||'')}</td><td class="num">${fmt(c.purchase)}</td><td class="num">${fmt(c.delivery)}</td><td class="num">${fmt(c.customs)}</td><td class="num">${fmt(c.util)}</td><td class="num">${fmt(c.other)}</td><td class="num">${fmt(carCosts(c))}</td><td class="num">${fmt(c.sale)}</td><td class="num ${p>=0?'profit-pos':'profit-neg'}">${fmt(p)}</td><td style="white-space:nowrap"><button class="btn-ghost btn-sm" onclick="genAds('${c.id}')">✨ Текст${c.ads&&(c.ads.telegram||c.ads.vk||c.ads.instagram)?' ✓':''}</button> <button class="del" onclick="delCar('${c.id}')">✕</button></td>`;b.appendChild(tr);});renderSummary();}
 function renderExp(){const b=document.getElementById('exp-body');b.innerHTML='';DATA.expenses.forEach(e=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${esc(e.date||'')}</td><td>${esc(e.cat||'')}</td><td class="num">${fmt(e.amount)}</td><td>${esc(e.note||'')}</td><td><button class="del" onclick="delExp('${e.id}')">✕</button></td>`;b.appendChild(tr);});renderSummary();}
 function renderSummary(){const cp=DATA.cars.reduce((s,c)=>s+carProfit(c),0);const ex=DATA.expenses.reduce((s,e)=>s+(+e.amount||0),0);const net=cp-ex;document.getElementById('summary').innerHTML=`<div class="stat"><span>Машин в учёте</span><b>${DATA.cars.length}</b></div><div class="stat good"><span>Прибыль с машин</span><b>${fmt(cp)}</b></div><div class="stat bad"><span>Общие расходы</span><b>${fmt(ex)}</b></div><div class="stat ${net>=0?'acc':'bad'}"><span>Чистая прибыль</span><b>${fmt(net)}</b></div>`;}
 function addCar(){const g=id=>document.getElementById(id);if(!g('c_name').value.trim()){g('c_name').focus();return;}DATA.cars.unshift({id:uid(),name:g('c_name').value.trim(),country:g('c_country').value,date:g('c_date').value,purchase:+g('c_purchase').value||0,delivery:+g('c_delivery').value||0,customs:+g('c_customs').value||0,util:+g('c_util').value||0,other:+g('c_other').value||0,sale:+g('c_sale').value||0,note:g('c_note').value.trim()});['c_name','c_purchase','c_delivery','c_customs','c_util','c_other','c_sale','c_note'].forEach(i=>g(i).value='');renderCars();save();}
@@ -291,6 +362,16 @@ async function loadUsers(){const r=await api('users_list');if(!r.ok)return;const
 async function addUser(){const g=id=>document.getElementById(id);const err=document.getElementById('u_err');err.textContent='';const login=g('u_login').value.trim(),name=g('u_name').value.trim(),role=g('u_role').value;if(!login){err.textContent='Введите логин';return;}const r=await api('user_add',{login,name,role});if(r.ok){['u_login','u_name'].forEach(i=>g(i).value='');loadUsers();showInvite(login,r.invite);}else{err.textContent={exists:'Такой логин уже есть',invalid:'Проверьте логин',write:'Ошибка записи'}[r.err]||'Ошибка';}}
 async function resetUser(login){if(!confirm('Сбросить пароль пользователя '+login+'? Он задаст новый по ссылке.'))return;const r=await api('user_reset',{login});if(r.ok){loadUsers();showInvite(login,r.invite);}else alert({self:'Свой пароль сбросьте через SSH (reset.php)'}[r.err]||'Ошибка');}
 async function delUser(login){if(!confirm('Удалить пользователя '+login+'?'))return;const r=await api('user_del',{login});if(r.ok)loadUsers();else alert({self:'Нельзя удалить самого себя',lastadmin:'Нельзя удалить последнего админа'}[r.err]||'Ошибка');}
+let adCarId=null, adData={telegram:'',vk:'',instagram:''}, adTabCur='telegram';
+function openAdModal(){document.getElementById('adModal').classList.remove('hide');}
+function closeAds(){document.getElementById('adModal').classList.add('hide');adCarId=null;}
+function fillAd(){document.getElementById('ad_text').value=adData[adTabCur]||'';}
+function adTab(t){adData[adTabCur]=document.getElementById('ad_text').value;adTabCur=t;document.querySelectorAll('#adModal .tab').forEach(x=>x.classList.toggle('active',x.dataset.at===t));fillAd();}
+async function genAds(id){const c=DATA.cars.find(x=>x.id===id);if(!c)return;adCarId=id;adTabCur='telegram';document.querySelectorAll('#adModal .tab').forEach(x=>x.classList.toggle('active',x.dataset.at==='telegram'));document.getElementById('ad_title').textContent='Объявление · '+c.name;document.getElementById('ad_hint').textContent='';openAdModal();if(c.ads&&(c.ads.telegram||c.ads.vk||c.ads.instagram)){adData={telegram:c.ads.telegram||'',vk:c.ads.vk||'',instagram:c.ads.instagram||''};fillAd();}else{await doGen(c);}}
+async function regenAds(){const c=DATA.cars.find(x=>x.id===adCarId);if(c)await doGen(c);}
+async function doGen(c){const L=document.getElementById('ad_loading'),T=document.getElementById('ad_text');L.classList.remove('hide');T.classList.add('hide');document.getElementById('ad_hint').textContent='';const r=await api('gen_ads',{car:{name:c.name,country:c.country,sale:c.sale,note:c.note}});L.classList.add('hide');T.classList.remove('hide');if(r.ok){adData={telegram:r.ads.telegram||'',vk:r.ads.vk||'',instagram:r.ads.instagram||''};fillAd();}else{document.getElementById('ad_hint').textContent={nokey:'API-ключ не настроен на сервере (см. инструкцию).',api:'Нейросеть не ответила. Попробуйте «Заново».'}[r.err]||'Ошибка генерации';}}
+function copyAd(){navigator.clipboard.writeText(document.getElementById('ad_text').value).then(()=>{document.getElementById('ad_hint').textContent='Скопировано ✓';},()=>{});}
+function saveAds(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);if(!c)return;c.ads={telegram:adData.telegram,vk:adData.vk,instagram:adData.instagram,generated_at:new Date().toISOString()};renderCars();save();document.getElementById('ad_hint').textContent='Сохранено в карточке ✓';}
 function renderCatSelect(){const sel=document.getElementById('e_cat');if(!sel)return;const cur=sel.value;sel.innerHTML='';(DATA.categories||[]).forEach(c=>{const o=document.createElement('option');o.textContent=c;sel.appendChild(o);});if(cur&&(DATA.categories||[]).includes(cur))sel.value=cur;}
 function renderCats(){const box=document.getElementById('cats-list');if(!box)return;box.innerHTML='';(DATA.categories||[]).forEach((c,i)=>{const chip=document.createElement('span');chip.className='badge user';chip.style.cssText='display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:6px 10px';chip.innerHTML=esc(c)+' <button class="del" style="font-size:14px;padding:0 2px" onclick="delCat('+i+')">✕</button>';box.appendChild(chip);});}
 function addCat(){const inp=document.getElementById('cat_new');const v=inp.value.trim();if(!v)return;if(!DATA.categories)DATA.categories=[];if(DATA.categories.some(c=>c.toLowerCase()===v.toLowerCase())){alert('Такая категория уже есть');return;}DATA.categories.push(v);inp.value='';renderCats();renderCatSelect();save();}
