@@ -175,9 +175,9 @@ if (isset($_GET['action'])) {
     $attach=[]; $upErr='';
     $photos=(array)($in['photos']??[]);
     if($photos){
-      [$srvJ]=$vk('photos.getWallUploadServer',['group_id'=>$gid]);
+      [$srvJ,$srvRaw]=$vk('photos.getWallUploadServer',['group_id'=>$gid]);
       $uploadUrl=$srvJ['response']['upload_url']??'';
-      if(!$uploadUrl && isset($srvJ['error'])) $upErr=$srvJ['error']['error_msg']??'';
+      if(!$uploadUrl) $upErr=$srvJ['error']['error_msg']??('getWallUploadServer: '.substr(strip_tags((string)$srvRaw),0,120));
       if($uploadUrl){
         foreach($photos as $p){
           if(strncmp((string)$p,'http',4)===0) continue;
@@ -186,7 +186,7 @@ if (isset($_GET['action'])) {
           if(!$path || strpos($path,realpath(__DIR__.'/uploads'))!==0 || !is_file($path)) continue;
           $ch=curl_init($uploadUrl); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_POSTFIELDS=>['photo'=>new CURLFile($path,'image/jpeg','photo.jpg')]]); $ur=curl_exec($ch); curl_close($ch);
           $uj=json_decode($ur,true);
-          if(!isset($uj['photo'])||$uj['photo']===''||$uj['photo']==='[]') continue;
+          if(!is_array($uj)||!isset($uj['photo'])||$uj['photo']===''||$uj['photo']==='[]'){ $upErr='upload: '.substr(strip_tags((string)$ur),0,120); continue; }
           [$saveJ]=$vk('photos.saveWallPhoto',['group_id'=>$gid,'server'=>$uj['server'],'photo'=>$uj['photo'],'hash'=>$uj['hash']]);
           $ph=$saveJ['response'][0]??null; if(!$ph){ if(isset($saveJ['error']))$upErr=$saveJ['error']['error_msg']??''; continue; }
           $attach[]='photo'.$ph['owner_id'].'_'.$ph['id'];
