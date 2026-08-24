@@ -154,6 +154,26 @@ if (isset($_GET['action'])) {
     if(@file_put_contents($dir.'/'.$fn,$bin)===false){ echo json_encode(['ok'=>false,'err'=>'не записалось']); exit; }
     echo json_encode(['ok'=>true,'url'=>'uploads/'.$fn]); exit;
   }
+  if ($a==='tg_post'){
+    $cfgf=__DIR__.'/tgconfig.php';
+    if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'Telegram-бот не настроен (нет tgconfig.php)']); exit; }
+    if(!defined('UCHET')) define('UCHET',1);
+    $cfg=@include $cfgf; if(!is_array($cfg))$cfg=[];
+    $token=(string)($cfg['token']??''); $chat=(string)($cfg['chat']??'');
+    if(!$token||!$chat){ echo json_encode(['ok'=>false,'err'=>'В tgconfig.php нет token или chat']); exit; }
+    $text=trim((string)($in['text']??'')); if($text===''){ echo json_encode(['ok'=>false,'err'=>'пустой текст']); exit; }
+    $base='https://'.($_SERVER['HTTP_HOST']??'serkinauto.ru');
+    $urls=[];
+    foreach((array)($in['photos']??[]) as $p){ $p=(string)$p; if($p==='')continue; if(strncmp($p,'http',4)===0)$urls[]=$p; else $urls[]=$base.'/uchet/'.ltrim(preg_replace('#^/uchet/#','',$p),'/'); }
+    $api='https://api.telegram.org/bot'.$token.'/';
+    $call=function($method,$params) use($api){ $ch=curl_init($api.$method); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>45,CURLOPT_POSTFIELDS=>$params]); $r=curl_exec($ch); curl_close($ch); return [json_decode($r,true),$r]; };
+    if(count($urls)===0){ [$j,$raw]=$call('sendMessage',['chat_id'=>$chat,'text'=>$text]); }
+    elseif(count($urls)===1){ [$j,$raw]=$call('sendPhoto',['chat_id'=>$chat,'photo'=>$urls[0],'caption'=>mb_substr($text,0,1024)]); }
+    else { $media=[]; foreach(array_slice($urls,0,10) as $i=>$u){ $m=['type'=>'photo','media'=>$u]; if($i===0)$m['caption']=mb_substr($text,0,1024); $media[]=$m; } [$j,$raw]=$call('sendMediaGroup',['chat_id'=>$chat,'media'=>json_encode($media,JSON_UNESCAPED_UNICODE)]); }
+    if(is_array($j)&&!empty($j['ok'])){ echo json_encode(['ok'=>true]); }
+    else { $desc=is_array($j)?($j['description']??'неизвестная ошибка'):substr((string)$raw,0,180); echo json_encode(['ok'=>false,'err'=>'Telegram: '.$desc]); }
+    exit;
+  }
 
   // --- только админ ---
   if ($me['role']!=='admin'){ http_response_code(403); echo json_encode(['ok'=>false,'err'=>'forbidden']); exit; }
@@ -305,6 +325,7 @@ async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(
         <button class="btn btn-sm" onclick="copyAd()">Скопировать</button>
         <button class="btn-ghost btn-sm" onclick="regenAds()">✨ Заново</button>
         <button class="btn-ghost btn-sm" onclick="saveAds()">Сохранить в карточке</button>
+        <button class="btn-ghost btn-sm" onclick="postTelegram()" title="Опубликовать текст Telegram-вкладки с фото авто в канал">📢 В Telegram</button>
         <span class="save-hint" id="ad_hint"></span>
       </div>
     </div>
@@ -459,6 +480,7 @@ async function regenAds(){const c=DATA.cars.find(x=>x.id===adCarId);if(c)await d
 async function doGen(c){const L=document.getElementById('ad_loading'),T=document.getElementById('ad_text');L.classList.remove('hide');T.classList.add('hide');document.getElementById('ad_hint').textContent='';const r=await api('gen_ads',{car:{name:c.name,country:c.country,sale:c.sale,note:c.note}});L.classList.add('hide');T.classList.remove('hide');if(r.ok){adData={telegram:r.ads.telegram||'',vk:r.ads.vk||'',instagram:r.ads.instagram||''};fillAd();}else{const base={nokey:'API-ключ не настроен на сервере (см. инструкцию).',api:'Нейросеть не ответила'}[r.err]||'Ошибка генерации';document.getElementById('ad_hint').textContent=base+(r.detail?(' — '+r.detail):'');}}
 function copyAd(){navigator.clipboard.writeText(document.getElementById('ad_text').value).then(()=>{document.getElementById('ad_hint').textContent='Скопировано ✓';},()=>{});}
 function saveAds(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);if(!c)return;c.ads={telegram:adData.telegram,vk:adData.vk,instagram:adData.instagram,generated_at:new Date().toISOString()};renderCars();save();document.getElementById('ad_hint').textContent='Сохранено в карточке ✓';}
+async function postTelegram(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);const text=(adData.telegram||'').trim()||document.getElementById('ad_text').value.trim();if(!text){document.getElementById('ad_hint').textContent='Сначала текст на вкладке Telegram';return;}const photos=c?carPhotos(c):[];if(!confirm('Опубликовать пост'+(photos.length?(' с '+photos.length+' фото'):' без фото')+' в Telegram-канал?'))return;document.getElementById('ad_hint').textContent='Публикую в Telegram…';const r=await api('tg_post',{text:text,photos:photos});document.getElementById('ad_hint').textContent=r.ok?'Опубликовано в Telegram ✓':('Ошибка — '+(r.err||''));}
 function renderCatSelect(){const sel=document.getElementById('e_cat');if(!sel)return;const cur=sel.value;sel.innerHTML='';(DATA.categories||[]).forEach(c=>{const o=document.createElement('option');o.textContent=c;sel.appendChild(o);});if(cur&&(DATA.categories||[]).includes(cur))sel.value=cur;}
 function renderCats(){const box=document.getElementById('cats-list');if(!box)return;box.innerHTML='';(DATA.categories||[]).forEach((c,i)=>{const chip=document.createElement('span');chip.className='badge user';chip.style.cssText='display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:6px 10px';chip.innerHTML=esc(c)+' <button class="del" style="font-size:14px;padding:0 2px" onclick="delCat('+i+')">✕</button>';box.appendChild(chip);});}
 function addCat(){const inp=document.getElementById('cat_new');const v=inp.value.trim();if(!v)return;if(!DATA.categories)DATA.categories=[];if(DATA.categories.some(c=>c.toLowerCase()===v.toLowerCase())){alert('Такая категория уже есть');return;}DATA.categories.push(v);inp.value='';renderCats();renderCatSelect();save();}
