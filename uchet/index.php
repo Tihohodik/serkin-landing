@@ -162,6 +162,47 @@ if (isset($_GET['action'])) {
     if(empty($cfg['token'])||empty($cfg['chat'])){ echo json_encode(['ok'=>false,'err'=>'no config']); exit; }
     echo json_encode(['ok'=>true,'token'=>$cfg['token'],'chat'=>$cfg['chat']]); exit;
   }
+  if ($a==='vk_post'){
+    $cfgf=__DIR__.'/vkconfig.php';
+    if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'VK не настроен (нет vkconfig.php)']); exit; }
+    if(!defined('UCHET')) define('UCHET',1);
+    $cfg=@include $cfgf; if(!is_array($cfg))$cfg=[];
+    $token=(string)($cfg['token']??''); $gid=(string)($cfg['group_id']??'');
+    if(!$token||!$gid){ echo json_encode(['ok'=>false,'err'=>'В vkconfig.php нет token или group_id']); exit; }
+    $text=trim((string)($in['text']??'')); if($text===''){ echo json_encode(['ok'=>false,'err'=>'пустой текст']); exit; }
+    $V='5.199';
+    $vk=function($method,$params) use($token,$V){ $params['access_token']=$token; $params['v']=$V; $ch=curl_init('https://api.vk.com/method/'.$method); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>45,CURLOPT_POSTFIELDS=>$params]); $r=curl_exec($ch); $e=curl_error($ch); curl_close($ch); return [json_decode($r,true),$r,$e]; };
+    $attach=[]; $upErr='';
+    $photos=(array)($in['photos']??[]);
+    if($photos){
+      [$srvJ]=$vk('photos.getWallUploadServer',['group_id'=>$gid]);
+      $uploadUrl=$srvJ['response']['upload_url']??'';
+      if(!$uploadUrl && isset($srvJ['error'])) $upErr=$srvJ['error']['error_msg']??'';
+      if($uploadUrl){
+        foreach($photos as $p){
+          if(strncmp((string)$p,'http',4)===0) continue;
+          $rel=ltrim(preg_replace('#^/uchet/#','',(string)$p),'/');
+          $path=realpath(__DIR__.'/'.$rel);
+          if(!$path || strpos($path,realpath(__DIR__.'/uploads'))!==0 || !is_file($path)) continue;
+          $ch=curl_init($uploadUrl); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_POSTFIELDS=>['photo'=>new CURLFile($path,'image/jpeg','photo.jpg')]]); $ur=curl_exec($ch); curl_close($ch);
+          $uj=json_decode($ur,true);
+          if(!isset($uj['photo'])||$uj['photo']===''||$uj['photo']==='[]') continue;
+          [$saveJ]=$vk('photos.saveWallPhoto',['group_id'=>$gid,'server'=>$uj['server'],'photo'=>$uj['photo'],'hash'=>$uj['hash']]);
+          $ph=$saveJ['response'][0]??null; if(!$ph){ if(isset($saveJ['error']))$upErr=$saveJ['error']['error_msg']??''; continue; }
+          $attach[]='photo'.$ph['owner_id'].'_'.$ph['id'];
+          if(count($attach)>=10) break;
+        }
+      }
+    }
+    $params=['owner_id'=>'-'.$gid,'from_group'=>1,'message'=>$text];
+    if($attach) $params['attachments']=implode(',',$attach);
+    [$postJ,$raw,$cerr]=$vk('wall.post',$params);
+    if(isset($postJ['response']['post_id'])){ echo json_encode(['ok'=>true,'post_id'=>$postJ['response']['post_id'],'photos'=>count($attach),'warn'=>$upErr?:null]); }
+    elseif(isset($postJ['error'])){ echo json_encode(['ok'=>false,'err'=>'VK: '.($postJ['error']['error_msg']??'ошибка '.($postJ['error']['error_code']??''))]); }
+    elseif($raw===false||$raw===''){ echo json_encode(['ok'=>false,'err'=>($cerr?('сеть: '.$cerr):'нет ответа от VK')]); }
+    else { echo json_encode(['ok'=>false,'err'=>'VK: непонятный ответ']); }
+    exit;
+  }
   if ($a==='tg_post'){
     $cfgf=__DIR__.'/tgconfig.php';
     if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'Telegram-бот не настроен (нет tgconfig.php)']); exit; }
@@ -336,6 +377,7 @@ async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(
         <button class="btn-ghost btn-sm" onclick="regenAds()">✨ Заново</button>
         <button class="btn-ghost btn-sm" onclick="saveAds()">Сохранить в карточке</button>
         <button class="btn-ghost btn-sm" onclick="postTelegram()" title="Опубликовать текст Telegram-вкладки с фото авто в канал">📢 В Telegram</button>
+        <button class="btn-ghost btn-sm" onclick="postVk()" title="Опубликовать текст VK-вкладки с фото авто в сообщество">🅥 В VK</button>
         <span class="save-hint" id="ad_hint"></span>
       </div>
     </div>
@@ -493,6 +535,7 @@ function saveAds(){adData[adTabCur]=document.getElementById('ad_text').value;con
 let TGCONF=null;
 async function tgConf(){if(TGCONF)return TGCONF;const r=await api('tg_conf');if(r.ok){TGCONF={token:r.token,chat:r.chat};return TGCONF;}return null;}
 function tgUrl(p){p=String(p);if(/^https?:/i.test(p))return p;return location.origin+'/uchet/'+p.replace(/^\/uchet\//,'').replace(/^\//,'');}
+async function postVk(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);const text=(adData.vk||'').trim()||document.getElementById('ad_text').value.trim();const hint=document.getElementById('ad_hint');if(!text){hint.textContent='Сначала текст на вкладке VK';return;}const photos=c?carPhotos(c):[];if(!confirm('Опубликовать пост'+(photos.length?(' с '+photos.length+' фото'):' без фото')+' в сообщество VK?'))return;hint.textContent='Публикую в VK…';const r=await api('vk_post',{text:text,photos:photos});hint.textContent=r.ok?('Опубликовано в VK ✓'+(r.warn?(' (фото: '+r.warn+')'):'')):('Ошибка — '+(r.err||''));}
 async function postTelegram(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);const text=(adData.telegram||'').trim()||document.getElementById('ad_text').value.trim();const hint=document.getElementById('ad_hint');if(!text){hint.textContent='Сначала текст на вкладке Telegram';return;}const conf=await tgConf();if(!conf||!conf.token||!conf.chat){hint.textContent='Telegram-бот не настроен (tgconfig.php)';return;}const rels=(c?carPhotos(c):[]).slice(0,10);if(!confirm('Опубликовать пост'+(rels.length?(' с '+rels.length+' фото'):' без фото')+' в Telegram-канал '+conf.chat+'?'))return;hint.textContent='Публикую в Telegram…';try{const files=[];for(const p of rels){try{const rr=await fetch(tgUrl(p));if(rr.ok)files.push(await rr.blob());}catch(e){}}const base='https://api.telegram.org/bot'+conf.token+'/';let j;if(files.length===0){const fd=new FormData();fd.append('chat_id',conf.chat);fd.append('text',text);j=await (await fetch(base+'sendMessage',{method:'POST',body:fd})).json();}else if(files.length===1){const fd=new FormData();fd.append('chat_id',conf.chat);fd.append('caption',text.slice(0,1024));fd.append('photo',files[0],'photo.jpg');j=await (await fetch(base+'sendPhoto',{method:'POST',body:fd})).json();}else{const fd=new FormData();fd.append('chat_id',conf.chat);const media=files.map((f,i)=>{const key='photo'+i;fd.append(key,f,key+'.jpg');return i===0?{type:'photo',media:'attach://'+key,caption:text.slice(0,1024)}:{type:'photo',media:'attach://'+key};});fd.append('media',JSON.stringify(media));j=await (await fetch(base+'sendMediaGroup',{method:'POST',body:fd})).json();}hint.textContent=(j&&j.ok)?'Опубликовано в Telegram ✓':('Ошибка — Telegram: '+((j&&j.description)||'неизвестно'));}catch(e){hint.textContent='Ошибка: '+e.message;}}
 function renderCatSelect(){const sel=document.getElementById('e_cat');if(!sel)return;const cur=sel.value;sel.innerHTML='';(DATA.categories||[]).forEach(c=>{const o=document.createElement('option');o.textContent=c;sel.appendChild(o);});if(cur&&(DATA.categories||[]).includes(cur))sel.value=cur;}
 function renderCats(){const box=document.getElementById('cats-list');if(!box)return;box.innerHTML='';(DATA.categories||[]).forEach((c,i)=>{const chip=document.createElement('span');chip.className='badge user';chip.style.cssText='display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:6px 10px';chip.innerHTML=esc(c)+' <button class="del" style="font-size:14px;padding:0 2px" onclick="delCat('+i+')">✕</button>';box.appendChild(chip);});}
