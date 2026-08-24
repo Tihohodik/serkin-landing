@@ -166,12 +166,14 @@ if (isset($_GET['action'])) {
     $urls=[];
     foreach((array)($in['photos']??[]) as $p){ $p=(string)$p; if($p==='')continue; if(strncmp($p,'http',4)===0)$urls[]=$p; else $urls[]=$base.'/uchet/'.ltrim(preg_replace('#^/uchet/#','',$p),'/'); }
     $api='https://api.telegram.org/bot'.$token.'/';
-    $call=function($method,$params) use($api){ $ch=curl_init($api.$method); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>45,CURLOPT_POSTFIELDS=>$params]); $r=curl_exec($ch); curl_close($ch); return [json_decode($r,true),$r]; };
-    if(count($urls)===0){ [$j,$raw]=$call('sendMessage',['chat_id'=>$chat,'text'=>$text]); }
-    elseif(count($urls)===1){ [$j,$raw]=$call('sendPhoto',['chat_id'=>$chat,'photo'=>$urls[0],'caption'=>mb_substr($text,0,1024)]); }
-    else { $media=[]; foreach(array_slice($urls,0,10) as $i=>$u){ $m=['type'=>'photo','media'=>$u]; if($i===0)$m['caption']=mb_substr($text,0,1024); $media[]=$m; } [$j,$raw]=$call('sendMediaGroup',['chat_id'=>$chat,'media'=>json_encode($media,JSON_UNESCAPED_UNICODE)]); }
+    $call=function($method,$params) use($api){ $ch=curl_init($api.$method); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>45,CURLOPT_POSTFIELDS=>$params]); $r=curl_exec($ch); $e=curl_error($ch); $code=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch); return [json_decode($r,true),$r,$e,$code]; };
+    if(count($urls)===0){ [$j,$raw,$cerr,$code]=$call('sendMessage',['chat_id'=>$chat,'text'=>$text]); }
+    elseif(count($urls)===1){ [$j,$raw,$cerr,$code]=$call('sendPhoto',['chat_id'=>$chat,'photo'=>$urls[0],'caption'=>mb_substr($text,0,1024)]); }
+    else { $media=[]; foreach(array_slice($urls,0,10) as $i=>$u){ $m=['type'=>'photo','media'=>$u]; if($i===0)$m['caption']=mb_substr($text,0,1024); $media[]=$m; } [$j,$raw,$cerr,$code]=$call('sendMediaGroup',['chat_id'=>$chat,'media'=>json_encode($media,JSON_UNESCAPED_UNICODE)]); }
     if(is_array($j)&&!empty($j['ok'])){ echo json_encode(['ok'=>true]); }
-    else { $desc=is_array($j)?($j['description']??'неизвестная ошибка'):substr((string)$raw,0,180); echo json_encode(['ok'=>false,'err'=>'Telegram: '.$desc]); }
+    elseif($raw===false||$raw===null||$raw===''){ echo json_encode(['ok'=>false,'err'=>($cerr?('сеть: '.$cerr):'нет ответа от api.telegram.org (хостинг может блокировать)')]); }
+    elseif(is_array($j)){ echo json_encode(['ok'=>false,'err'=>'Telegram: '.($j['description']??('код '.$code))]); }
+    else { echo json_encode(['ok'=>false,'err'=>'Telegram HTTP '.$code.': '.substr(strip_tags((string)$raw),0,160)]); }
     exit;
   }
 
