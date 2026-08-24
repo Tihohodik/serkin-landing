@@ -16,17 +16,15 @@ function ai_ads($cfg, $c){
   $facts = "Модель: $name\n";
   $map = ['country'=>'Страна вывоза','sale'=>'Цена под ключ, ₽','note'=>'Заметка/контекст'];
   foreach ($map as $k=>$lbl){ if (!empty($c[$k])) $facts .= "$lbl: " . trim((string)$c[$k]) . "\n"; }
-  $sys = "Ты пишешь посты за Евгения Серкина (Иркутск) — он лично подбирает и привозит авто из-за границы под ключ (выбор → выкуп → доставка → растаможка → утильсбор → пригон к дому), упор на Китай и Америку.\n".
-    "ГОЛОС: живой, от первого лица, будто Евгений сам рассказывает другу про машину, которую только что пригнал. Тепло, спокойная уверенность, лёгкая гордость за работу. Клиенты приходят по рекомендации — это круг доверия, «клуб, а не магазин».\n".
-    "ИЗБЕГАЙ штампов и рекламного пафоса: «воплощение надёжности», «идеальный выбор», «автомобиль вашей мечты», «не упустите», «спешите», «по доступной цене», сухих перечислений характеристик. Лучше живая деталь, честная интонация, конкретика: откуда авто, чем хорош, кому подойдёт.\n".
-    "Не выдумывай характеристики, которых нет в данных. Никогда не упоминай себестоимость, наценку, прибыль. Если цена не указана — «цена под ключ по запросу». Финал — мягкий призыв написать Евгению в личку или Telegram.\n".
-    "Слоган можно ненавязчиво обыграть, но не в каждом посте: «Подбираю · проверяю · доставляю · вручаю… скучаю…».\n".
-    "Эмодзи — умеренно, 2–4 на пост, к месту, не в каждой строке.\n".
-    "Верни СТРОГО JSON без markdown-обёрток и без текста вокруг: {\"telegram\":\"...\",\"vk\":\"...\",\"instagram\":\"...\"}.\n".
-    "telegram: 450–750 знаков, короткие абзацы, в конце призыв и 3–4 хэштега.\n".
-    "vk: 600–950 знаков, чуть подробнее и спокойнее, призыв и 3–4 хэштега.\n".
-    "instagram: живой кэпшн 350–600 знаков, 5–7 хэштегов, без ссылок (в Instagram они не кликаются).\n".
-    "Пиши по-русски, разными формулировками для каждой площадки — не копируй один текст в три.";
+  $sys = "Ты пишешь посты за Евгения Серкина (Иркутск) — он лично подбирает и привозит авто под ключ из-за границы (упор Китай и США).\n".
+    "ГОЛОС: живой, тёплый, от первого лица, будто Евгений сам рассказывает другу про машину, которую пригнал. Уверенно, по-доброму, с лёгкой гордостью. Клиенты — круг доверия, «клуб, а не магазин».\n".
+    "ГЛАВНОЕ: НЕ пиши шаблонно и обще. Заходи с КОНКРЕТНОГО угла/крючка (актуальный повод, выгода, история, эмоция), а не с «Привет, друзья! Пригнал красавца X». Меняй начало в каждом посте.\n".
+    "ЗАПРЕЩЕННЫЕ мёртвые штампы: «для тех, кто ценит инновации и комфорт», «воплощение надёжности», «идеальный выбор», «автомобиль мечты», «не упустите», «спешите», «ценит качество и стиль», сухое перечисление характеристик. Тянет так написать — переформулируй живее и конкретнее.\n".
+    "ПРИМЕР нужного тона (Tesla, угол «электро в свете последних событий»): «Пригнал красавицу Tesla из США. Сейчас электричка прям в тему: забыл про заправки, про скачки цен на бензин, да и экология. Тихо, быстро, экономно. Приглядывался к электро — вот повод. Напиши в личку, расскажу по этой машине всё как есть. 👌⚡»\n".
+    "Если задано НАПРАВЛЕНИЕ/АКЦЕНТ — весь пост строй вокруг него, это тема номер один.\n".
+    "Не выдумывай характеристик, которых нет в данных. Не упоминай себестоимость/наценку/прибыль. Цена не указана — «цена под ключ по запросу». Финал — мягкий призыв написать в личку или Telegram.\n".
+    "Эмодзи — 2–4 на пост, к месту. Верни СТРОГО JSON без markdown: {\"telegram\":\"...\",\"vk\":\"...\",\"instagram\":\"...\"}.\n".
+    "telegram 450–750 знаков + 3–4 хэштега; vk 600–950 + 3–4 хэштега; instagram 350–600 + 5–7 хэштегов (без ссылок). Для каждой площадки — РАЗНЫЕ формулировки, не копируй один текст в три. Русский.";
   $brief = trim((string)($c['brief'] ?? ''));
   $usr = "Данные автомобиля:\n$facts\n".($brief!==''?("ОСОБОЕ НАПРАВЛЕНИЕ/АКЦЕНТ этого поста — обязательно построй тексты вокруг этого: ".$brief."\n"):"")."Сгенерируй три рекламных поста об этом авто для Telegram, VK и Instagram.";
   if (!function_exists('curl_init')) return ['err'=>'на хостинге нет curl'];
@@ -40,7 +38,8 @@ function ai_ads($cfg, $c){
     $authScheme = (string)($cfg['auth'] ?? 'Bearer');
     $hdr = ['content-type: application/json','authorization: '.$authScheme.' '.$key];
     if (!empty($cfg['folder'])) $hdr[] = 'x-folder-id: '.$cfg['folder'];
-    $payload = json_encode(['model'=>$model,'max_tokens'=>2000,'messages'=>[['role'=>'system','content'=>$sys],['role'=>'user','content'=>$usr]]], JSON_UNESCAPED_UNICODE);
+    $temp = isset($cfg['temperature'])?(float)$cfg['temperature']:0.8;
+    $payload = json_encode(['model'=>$model,'max_tokens'=>2000,'temperature'=>$temp,'messages'=>[['role'=>'system','content'=>$sys],['role'=>'user','content'=>$usr]]], JSON_UNESCAPED_UNICODE);
     $ch = curl_init($base.'/chat/completions');
     curl_setopt_array($ch, [CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>60,CURLOPT_HTTPHEADER=>$hdr,CURLOPT_POSTFIELDS=>$payload]);
     $res = curl_exec($ch); $cerr = curl_error($ch); $code = curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
@@ -560,7 +559,7 @@ function fillAd(){document.getElementById('ad_text').value=adData[adTabCur]||'';
 function adTab(t){adData[adTabCur]=document.getElementById('ad_text').value;adTabCur=t;document.querySelectorAll('#adModal .tab').forEach(x=>x.classList.toggle('active',x.dataset.at===t));fillAd();}
 async function genAds(id){const c=DATA.cars.find(x=>x.id===id);if(!c)return;adCarId=id;adTabCur='telegram';document.querySelectorAll('#adModal .tab').forEach(x=>x.classList.toggle('active',x.dataset.at==='telegram'));document.getElementById('ad_title').textContent='Объявление · '+c.name;document.getElementById('ad_hint').textContent='';document.getElementById('ad_brief').value='';openAdModal();if(c.ads&&(c.ads.telegram||c.ads.vk||c.ads.instagram)){adData={telegram:c.ads.telegram||'',vk:c.ads.vk||'',instagram:c.ads.instagram||''};fillAd();}else{await doGen(c);}}
 async function regenAds(){const c=DATA.cars.find(x=>x.id===adCarId);if(c)await doGen(c);}
-function setBrief(t){document.getElementById('ad_brief').value=t;}
+function setBrief(t){document.getElementById('ad_brief').value=t;if(adCarId){const c=DATA.cars.find(x=>x.id===adCarId);if(c)doGen(c);}}
 async function doGen(c){const L=document.getElementById('ad_loading'),T=document.getElementById('ad_text');L.classList.remove('hide');T.classList.add('hide');document.getElementById('ad_hint').textContent='';const brief=(document.getElementById('ad_brief').value||'').trim();const r=await api('gen_ads',{car:{name:c.name,country:c.country,sale:c.sale,note:c.note,brief:brief}});L.classList.add('hide');T.classList.remove('hide');if(r.ok){adData={telegram:r.ads.telegram||'',vk:r.ads.vk||'',instagram:r.ads.instagram||''};fillAd();}else{const base={nokey:'API-ключ не настроен на сервере (см. инструкцию).',api:'Нейросеть не ответила'}[r.err]||'Ошибка генерации';document.getElementById('ad_hint').textContent=base+(r.detail?(' — '+r.detail):'');}}
 function copyAd(){navigator.clipboard.writeText(document.getElementById('ad_text').value).then(()=>{document.getElementById('ad_hint').textContent='Скопировано ✓';},()=>{});}
 function saveAds(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);if(!c)return;c.ads={telegram:adData.telegram,vk:adData.vk,instagram:adData.instagram,generated_at:new Date().toISOString()};renderCars();save();document.getElementById('ad_hint').textContent='Сохранено в карточке ✓';}
