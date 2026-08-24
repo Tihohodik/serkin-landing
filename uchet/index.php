@@ -10,9 +10,9 @@ function write_json($f,$d){ global $GUARD; $r=@file_put_contents($f, $GUARD.json
 function tok(){ return bin2hex(random_bytes(8)); }
 
 // --- Генерация рекламных текстов через Claude API ---
-function ai_ads($cfg, $c){
+function ad_prompt($c){
   $name = trim((string)($c['name'] ?? ''));
-  if ($name === '') return ['err'=>'нет модели авто'];
+  if ($name === '') return null;
   $facts = "Модель: $name\n";
   $map = ['country'=>'Страна вывоза','sale'=>'Цена под ключ, ₽','note'=>'Заметка/контекст'];
   foreach ($map as $k=>$lbl){ if (!empty($c[$k])) $facts .= "$lbl: " . trim((string)$c[$k]) . "\n"; }
@@ -31,6 +31,11 @@ function ai_ads($cfg, $c){
     "telegram 450–750 знаков + 3–4 хэштега; vk 600–950 + 3–4 хэштега; instagram 350–600 + 5–7 хэштегов (без ссылок). Для каждой площадки — РАЗНЫЕ формулировки, не копируй один текст в три. Русский.";
   $brief = trim((string)($c['brief'] ?? ''));
   $usr = "Данные автомобиля:\n$facts\n".($brief!==''?("ОСОБОЕ НАПРАВЛЕНИЕ/АКЦЕНТ этого поста — обязательно построй тексты вокруг этого: ".$brief."\n"):"")."Сгенерируй три рекламных поста об этом авто для Telegram, VK и Instagram.";
+  return [$sys,$usr];
+}
+function ai_ads($cfg, $c){
+  $p = ad_prompt($c); if ($p === null) return ['err'=>'нет модели авто'];
+  [$sys,$usr] = $p;
   if (!function_exists('curl_init')) return ['err'=>'на хостинге нет curl'];
   $provider = strtolower((string)($cfg['provider'] ?? 'anthropic'));
   $key = (string)($cfg['key'] ?? '');
@@ -144,6 +149,11 @@ if (isset($_GET['action'])) {
     if(!defined('UCHET')) define('UCHET',1);
     $cfg=@include $cfgf; if(!is_array($cfg)) $cfg=[];
     if(empty($cfg['key'])){ echo json_encode(['ok'=>false,'err'=>'nokey']); exit; }
+    if(strtolower((string)($cfg['mode']??'server'))==='client'){
+      $p=ad_prompt($in['car']??[]);
+      if($p===null){ echo json_encode(['ok'=>false,'err'=>'api','detail'=>'нет модели авто']); exit; }
+      echo json_encode(['ok'=>false,'client'=>true,'base'=>rtrim((string)($cfg['base']??''),'/'),'key'=>(string)$cfg['key'],'model'=>(string)($cfg['model']??''),'temperature'=>(isset($cfg['temperature'])?(float)$cfg['temperature']:0.9),'messages'=>[['role'=>'system','content'=>$p[0]],['role'=>'user','content'=>$p[1]]]]); exit;
+    }
     $r=ai_ads($cfg,($in['car']??[]));
     if(isset($r['ads'])){ echo json_encode(['ok'=>true,'ads'=>$r['ads'],'note'=>($r['err']??null)]); exit; }
     echo json_encode(['ok'=>false,'err'=>'api','detail'=>($r['err']??'')]); exit;
@@ -564,7 +574,20 @@ function adTab(t){adData[adTabCur]=document.getElementById('ad_text').value;adTa
 async function genAds(id){const c=DATA.cars.find(x=>x.id===id);if(!c)return;adCarId=id;adTabCur='telegram';document.querySelectorAll('#adModal .tab').forEach(x=>x.classList.toggle('active',x.dataset.at==='telegram'));document.getElementById('ad_title').textContent='Объявление · '+c.name;document.getElementById('ad_hint').textContent='';document.getElementById('ad_brief').value='';openAdModal();if(c.ads&&(c.ads.telegram||c.ads.vk||c.ads.instagram)){adData={telegram:c.ads.telegram||'',vk:c.ads.vk||'',instagram:c.ads.instagram||''};fillAd();}else{await doGen(c);}}
 async function regenAds(){const c=DATA.cars.find(x=>x.id===adCarId);if(c)await doGen(c);}
 function setBrief(t){document.getElementById('ad_brief').value=t;if(adCarId){const c=DATA.cars.find(x=>x.id===adCarId);if(c)doGen(c);}}
-async function doGen(c){const L=document.getElementById('ad_loading'),T=document.getElementById('ad_text');L.classList.remove('hide');T.classList.add('hide');document.getElementById('ad_hint').textContent='';const brief=(document.getElementById('ad_brief').value||'').trim();const r=await api('gen_ads',{car:{name:c.name,country:c.country,sale:c.sale,note:c.note,brief:brief}});L.classList.add('hide');T.classList.remove('hide');if(r.ok){adData={telegram:r.ads.telegram||'',vk:r.ads.vk||'',instagram:r.ads.instagram||''};fillAd();}else{const base={nokey:'API-ключ не настроен на сервере (см. инструкцию).',api:'Нейросеть не ответила'}[r.err]||'Ошибка генерации';document.getElementById('ad_hint').textContent=base+(r.detail?(' — '+r.detail):'');}}
+async function doGen(c){const L=document.getElementById('ad_loading'),T=document.getElementById('ad_text'),H=document.getElementById('ad_hint');L.classList.remove('hide');T.classList.add('hide');H.textContent='';const brief=(document.getElementById('ad_brief').value||'').trim();const r=await api('gen_ads',{car:{name:c.name,country:c.country,sale:c.sale,note:c.note,brief:brief}});
+  if(r.client){
+    try{
+      const resp=await fetch(r.base+'/chat/completions',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+r.key,'HTTP-Referer':location.origin,'X-Title':'Serkin Uchet'},body:JSON.stringify({model:r.model,temperature:r.temperature,max_tokens:2000,messages:r.messages})});
+      const j=await resp.json();L.classList.add('hide');T.classList.remove('hide');
+      if(!resp.ok){H.textContent='Ошибка ИИ: API '+resp.status+' '+((j&&j.error&&(j.error.message||JSON.stringify(j.error)))||'');return;}
+      let raw=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||'';raw=String(raw).replace(/^```[a-z]*\s*/i,'').replace(/\s*```$/,'').trim();
+      let ads=null;try{ads=JSON.parse(raw);}catch(e){}
+      if(ads&&typeof ads==='object'){adData={telegram:ads.telegram||'',vk:ads.vk||'',instagram:ads.instagram||''};fillAd();}
+      else{adData={telegram:raw,vk:'',instagram:''};fillAd();H.textContent='Модель вернула не-JSON (текст в Telegram)';}
+    }catch(e){L.classList.add('hide');T.classList.remove('hide');H.textContent='Браузер не смог вызвать ИИ: '+e.message;}
+    return;
+  }
+  L.classList.add('hide');T.classList.remove('hide');if(r.ok){adData={telegram:r.ads.telegram||'',vk:r.ads.vk||'',instagram:r.ads.instagram||''};fillAd();}else{const base={nokey:'API-ключ не настроен на сервере (см. инструкцию).',api:'Нейросеть не ответила'}[r.err]||'Ошибка генерации';H.textContent=base+(r.detail?(' — '+r.detail):'');}}
 function copyAd(){navigator.clipboard.writeText(document.getElementById('ad_text').value).then(()=>{document.getElementById('ad_hint').textContent='Скопировано ✓';},()=>{});}
 function saveAds(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);if(!c)return;c.ads={telegram:adData.telegram,vk:adData.vk,instagram:adData.instagram,generated_at:new Date().toISOString()};renderCars();save();document.getElementById('ad_hint').textContent='Сохранено в карточке ✓';}
 let TGCONF=null;
