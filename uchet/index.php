@@ -211,7 +211,8 @@ if (isset($_GET['action'])) {
     $vc=@include $cfgf; if(!is_array($vc))$vc=[];
     if(empty($vc['client_id'])){ echo json_encode(['ok'=>false,'err'=>'в vkconfig.php нужен client_id']); exit; }
     $redir=(string)($vc['redirect_uri']??'https://oauth.vk.com/blank.html');
-    $url='https://oauth.vk.com/authorize?'.http_build_query(['client_id'=>$vc['client_id'],'redirect_uri'=>$redir,'scope'=>'wall,photos,groups,offline','response_type'=>'code','v'=>'5.199']);
+    $scope=(string)($vc['scope']??'wall,photos,groups,offline');
+    $url='https://oauth.vk.com/authorize?'.http_build_query(['client_id'=>$vc['client_id'],'redirect_uri'=>$redir,'scope'=>$scope,'response_type'=>'code','v'=>'5.199']);
     echo json_encode(['ok'=>true,'url'=>$url]); exit;
   }
   if ($a==='vk_auth_finish'){
