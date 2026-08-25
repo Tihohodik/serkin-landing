@@ -16,11 +16,9 @@ function vk_state_write($d){ return write_json(__DIR__.'/vkstate.php',$d); }
 function vk_valid_token($cfg){
   $st=vk_state_read();
   if(empty($st['access_token'])) return ['err'=>'VK не подключён — Настройки → «Подключить VK»'];
-  if((int)($st['expires_at']??0) > time()+60) return ['token'=>$st['access_token']];
-  if(empty($st['refresh_token'])) return ['err'=>'VK: сессия истекла, переподключите VK'];
-  [$j]=vkid_call(['grant_type'=>'refresh_token','refresh_token'=>$st['refresh_token'],'client_id'=>(string)($cfg['client_id']??''),'device_id'=>(string)($st['device_id']??''),'state'=>bin2hex(random_bytes(4)),'scope'=>'wall photos groups']);
-  if(!empty($j['access_token'])){ vk_state_write(['access_token'=>$j['access_token'],'refresh_token'=>($j['refresh_token']??$st['refresh_token']),'expires_at'=>time()+((int)($j['expires_in']??3500)),'device_id'=>($st['device_id']??'')]); return ['token'=>$j['access_token']]; }
-  return ['err'=>'VK: не удалось обновить токен — переподключите VK'];
+  $exp=(int)($st['expires_at']??0);
+  if($exp!==0 && $exp < time()+30) return ['err'=>'VK: токен истёк, переподключите VK (Настройки)'];
+  return ['token'=>$st['access_token']];
 }
 
 // --- Генерация рекламных текстов через Claude API ---
@@ -95,26 +93,6 @@ if ($auth && isset($auth['hash']) && !isset($auth['users'])) { // миграци
 $users = $auth['users'] ?? [];
 $idx_by_login = function($login) use (&$users){ foreach($users as $i=>$u){ if(isset($u['login'])&&mb_strtolower($u['login'])===mb_strtolower(trim($login))) return $i; } return -1; };
 $idx_by_invite = function($t) use (&$users){ if(!$t) return -1; foreach($users as $i=>$u){ if(!empty($u['invite'])&&hash_equals((string)$u['invite'],(string)$t)) return $i; } return -1; };
-
-// ---------- VK ID OAuth callback (редирект от id.vk.ru с ?code=&state=&device_id=) ----------
-if (isset($_GET['code'], $_GET['state'])) {
-  if (empty($_SESSION['user']) || ($_SESSION['user']['role'] ?? '') !== 'admin') { header('Location: index.php'); exit; }
-  if (!defined('UCHET')) define('UCHET', 1);
-  $vc = @include __DIR__.'/vkconfig.php'; if (!is_array($vc)) $vc = [];
-  $vst = vk_state_read();
-  if (($vst['state'] ?? '') !== $_GET['state']) { header('Location: index.php?vk=badstate'); exit; }
-  $device_id = (string)($_GET['device_id'] ?? '');
-  [$vj, $vraw] = vkid_call([
-    'grant_type'=>'authorization_code', 'code'=>$_GET['code'], 'code_verifier'=>($vst['verifier'] ?? ''),
-    'client_id'=>(string)($vc['client_id'] ?? ''), 'device_id'=>$device_id,
-    'redirect_uri'=>(string)($vc['redirect_uri'] ?? ''), 'state'=>$_GET['state'],
-  ]);
-  if (!empty($vj['access_token'])) {
-    vk_state_write(['access_token'=>$vj['access_token'], 'refresh_token'=>($vj['refresh_token'] ?? ''), 'expires_at'=>time()+((int)($vj['expires_in'] ?? 3500)), 'device_id'=>$device_id]);
-    header('Location: index.php?vk=ok'); exit;
-  }
-  header('Location: index.php?vk=err&d='.urlencode(substr((string)($vj['error_description'] ?? $vraw), 0, 140))); exit;
-}
 
 // ---------- API ----------
 if (isset($_GET['action'])) {
@@ -231,13 +209,30 @@ if (isset($_GET['action'])) {
     if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'нет vkconfig.php']); exit; }
     if(!defined('UCHET')) define('UCHET',1);
     $vc=@include $cfgf; if(!is_array($vc))$vc=[];
-    if(empty($vc['client_id'])||empty($vc['redirect_uri'])){ echo json_encode(['ok'=>false,'err'=>'в vkconfig.php нужны client_id и redirect_uri']); exit; }
-    $verifier=rtrim(strtr(base64_encode(random_bytes(48)),'+/','-_'),'=');
-    $challenge=rtrim(strtr(base64_encode(hash('sha256',$verifier,true)),'+/','-_'),'=');
-    $state=bin2hex(random_bytes(8));
-    $prev=vk_state_read(); $prev['verifier']=$verifier; $prev['state']=$state; vk_state_write($prev);
-    $url='https://id.vk.ru/authorize?'.http_build_query(['response_type'=>'code','client_id'=>$vc['client_id'],'redirect_uri'=>$vc['redirect_uri'],'scope'=>'wall photos groups','state'=>$state,'code_challenge'=>$challenge,'code_challenge_method'=>'S256']);
+    if(empty($vc['client_id'])){ echo json_encode(['ok'=>false,'err'=>'в vkconfig.php нужен client_id']); exit; }
+    $redir=(string)($vc['redirect_uri']??'https://oauth.vk.com/blank.html');
+    $url='https://oauth.vk.com/authorize?'.http_build_query(['client_id'=>$vc['client_id'],'redirect_uri'=>$redir,'scope'=>'wall,photos,groups,offline','response_type'=>'code','v'=>'5.199']);
     echo json_encode(['ok'=>true,'url'=>$url]); exit;
+  }
+  if ($a==='vk_auth_finish'){
+    if($me['role']!=='admin'){ echo json_encode(['ok'=>false,'err'=>'только админ']); exit; }
+    $cfgf=__DIR__.'/vkconfig.php';
+    if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'нет vkconfig.php']); exit; }
+    if(!defined('UCHET')) define('UCHET',1);
+    $vc=@include $cfgf; if(!is_array($vc))$vc=[];
+    if(empty($vc['client_id'])||empty($vc['client_secret'])){ echo json_encode(['ok'=>false,'err'=>'в vkconfig.php нужны client_id и client_secret']); exit; }
+    $code=trim((string)($in['code']??''));
+    if(preg_match('#[?&#]code=([^&\s#]+)#',$code,$m)) $code=$m[1];
+    $code=trim($code);
+    if($code===''){ echo json_encode(['ok'=>false,'err'=>'пустой код']); exit; }
+    if(!function_exists('curl_init')){ echo json_encode(['ok'=>false,'err'=>'нет curl']); exit; }
+    $redir=(string)($vc['redirect_uri']??'https://oauth.vk.com/blank.html');
+    $ch=curl_init('https://oauth.vk.com/access_token?'.http_build_query(['client_id'=>$vc['client_id'],'client_secret'=>$vc['client_secret'],'redirect_uri'=>$redir,'code'=>$code]));
+    curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>30]); $res=curl_exec($ch); $cerr=curl_error($ch); curl_close($ch);
+    if($res===false){ echo json_encode(['ok'=>false,'err'=>'сеть: '.($cerr?:'нет ответа')]); exit; }
+    $j=json_decode($res,true);
+    if(!empty($j['access_token'])){ $expIn=(int)($j['expires_in']??0); vk_state_write(['access_token'=>$j['access_token'],'expires_at'=>($expIn>0?time()+$expIn:0)]); echo json_encode(['ok'=>true]); exit; }
+    echo json_encode(['ok'=>false,'err'=>'VK: '.($j['error_description']??($j['error']??substr(strip_tags((string)$res),0,140)))]); exit;
   }
   if ($a==='vk_post'){
     $cfgf=__DIR__.'/vkconfig.php';
@@ -548,8 +543,16 @@ async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(
     <div class="card">
       <h3 style="margin:0 0 10px;font-size:16px">Публикация в VK</h3>
       <p class="muted" id="vk_status_txt" style="font-size:13px;margin:0 0 10px">Проверяю подключение…</p>
-      <button class="btn" onclick="connectVk()">Подключить / переподключить VK</button>
-      <p class="muted" style="font-size:12.5px;margin:10px 0 0">Один раз авторизуешь своё VK-приложение — дальше кабинет постит фото и видео на стену сообщества сам, токен обновляется автоматически.</p>
+      <ol style="font-size:13px;color:var(--muted);margin:0 0 10px;padding-left:18px;line-height:1.6">
+        <li>Нажми <b>«Открыть авторизацию VK»</b> → «Разрешить». Откроется пустая страница.</li>
+        <li>Скопируй <b>весь адрес</b> той страницы (Ctrl+L → Ctrl+C) и вставь в поле ниже → «Завершить».</li>
+      </ol>
+      <button class="btn" onclick="vkAuthOpen()">Открыть авторизацию VK</button>
+      <div class="frm" style="grid-template-columns:1fr auto;margin-top:10px">
+        <div><input id="vk_code" placeholder="вставь адрес страницы (или код после code=)"></div>
+        <div><button class="btn" onclick="vkAuthFinish()">Завершить подключение</button></div>
+      </div>
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0">Токен получает и хранит сервер — он не привязан к твоему IP. Разовая процедура.</p>
     </div>
     <div class="card">
       <h3 style="margin:0 0 12px;font-size:16px">Категории расходов</h3>
@@ -658,7 +661,8 @@ let TGCONF=null;
 async function tgConf(){if(TGCONF)return TGCONF;const r=await api('tg_conf');if(r.ok){TGCONF={token:r.token,chat:r.chat};return TGCONF;}return null;}
 function tgUrl(p){p=String(p);if(/^https?:/i.test(p))return p;return location.origin+'/uchet/'+p.replace(/^\/uchet\//,'').replace(/^\//,'');}
 async function vkStatus(){const el=document.getElementById('vk_status_txt');if(!el)return;const r=await api('vk_status');if(r&&r.ok)el.innerHTML=r.connected?'<b style="color:var(--good)">VK подключён ✓</b> — постинг фото/видео на стену работает.':'VK не подключён. Нажмите кнопку ниже и пройдите «Разрешить».';}
-async function connectVk(){const r=await api('vk_auth_start');if(r&&r.ok&&r.url){window.open(r.url,'_blank');}else{alert('Не удалось начать подключение VK: '+((r&&r.err)||''));}}
+async function vkAuthOpen(){const r=await api('vk_auth_start');if(r&&r.ok&&r.url){window.open(r.url,'_blank');}else{alert('Не удалось начать подключение VK: '+((r&&r.err)||''));}}
+async function vkAuthFinish(){const code=(document.getElementById('vk_code').value||'').trim();if(!code){alert('Вставьте адрес/код из шага 2');return;}const r=await api('vk_auth_finish',{code:code});if(r&&r.ok){document.getElementById('vk_code').value='';vkStatus();alert('VK подключён ✓ — теперь фото/видео постятся на стену.');}else{alert('Не подключилось: '+((r&&r.err)||''));}}
 async function postVk(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);const text=(adData.vk||'').trim()||document.getElementById('ad_text').value.trim();const hint=document.getElementById('ad_hint');if(!text){hint.textContent='Сначала текст на вкладке VK';return;}const photos=c?carPhotos(c):[];if(!confirm('Опубликовать пост'+(photos.length?(' с '+photos.length+' фото'):' без фото')+' в сообщество VK?'))return;hint.textContent='Публикую в VK…';const r=await api('vk_post',{text:text,photos:photos});hint.textContent=r.ok?('Опубликовано в VK ✓'+(r.warn?(' (фото: '+r.warn+')'):'')):('Ошибка — '+(r.err||''));}
 async function postTelegram(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);const text=(adData.telegram||'').trim()||document.getElementById('ad_text').value.trim();const hint=document.getElementById('ad_hint');if(!text){hint.textContent='Сначала текст на вкладке Telegram';return;}const conf=await tgConf();if(!conf||!conf.token||!conf.chat){hint.textContent='Telegram-бот не настроен (tgconfig.php)';return;}const items=[];(c?carPhotos(c):[]).forEach(u=>items.push({url:u,type:'photo'}));(c?carVideos(c):[]).forEach(u=>items.push({url:u,type:'video'}));const media=items.slice(0,10);if(!confirm('Опубликовать пост'+(media.length?(' с '+media.length+' медиа'):' без медиа')+' в Telegram-канал '+conf.chat+'?'))return;hint.textContent='Публикую в Telegram…';try{const files=[];for(const m of media){try{const rr=await fetch(tgUrl(m.url));if(rr.ok)files.push({blob:await rr.blob(),type:m.type});}catch(e){}}const base='https://api.telegram.org/bot'+conf.token+'/';let j;if(files.length===0){const fd=new FormData();fd.append('chat_id',conf.chat);fd.append('text',text);j=await (await fetch(base+'sendMessage',{method:'POST',body:fd})).json();}else if(files.length===1){const f=files[0];const fd=new FormData();fd.append('chat_id',conf.chat);fd.append('caption',text.slice(0,1024));if(f.type==='video'){fd.append('video',f.blob,'v.mp4');j=await (await fetch(base+'sendVideo',{method:'POST',body:fd})).json();}else{fd.append('photo',f.blob,'p.jpg');j=await (await fetch(base+'sendPhoto',{method:'POST',body:fd})).json();}}else{const fd=new FormData();fd.append('chat_id',conf.chat);const mg=files.map((f,i)=>{const key='m'+i;fd.append(key,f.blob,key+(f.type==='video'?'.mp4':'.jpg'));const o={type:f.type,media:'attach://'+key};if(i===0)o.caption=text.slice(0,1024);return o;});fd.append('media',JSON.stringify(mg));j=await (await fetch(base+'sendMediaGroup',{method:'POST',body:fd})).json();}hint.textContent=(j&&j.ok)?'Опубликовано в Telegram ✓':('Ошибка — Telegram: '+((j&&j.description)||'неизвестно'));}catch(e){hint.textContent='Ошибка: '+e.message;}}
 function renderCatSelect(){const sel=document.getElementById('e_cat');if(!sel)return;const cur=sel.value;sel.innerHTML='';(DATA.categories||[]).forEach(c=>{const o=document.createElement('option');o.textContent=c;sel.appendChild(o);});if(cur&&(DATA.categories||[]).includes(cur))sel.value=cur;}
