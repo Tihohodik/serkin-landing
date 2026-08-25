@@ -212,7 +212,7 @@ if (isset($_GET['action'])) {
     if(empty($vc['client_id'])){ echo json_encode(['ok'=>false,'err'=>'в vkconfig.php нужен client_id']); exit; }
     $redir=(string)($vc['redirect_uri']??'https://oauth.vk.com/blank.html');
     $scope=(string)($vc['scope']??'wall,photos,groups,offline');
-    $url='https://oauth.vk.com/authorize?'.http_build_query(['client_id'=>$vc['client_id'],'redirect_uri'=>$redir,'scope'=>$scope,'response_type'=>'code','v'=>'5.199']);
+    $url='https://oauth.vk.ru/authorize?'.http_build_query(['client_id'=>$vc['client_id'],'redirect_uri'=>$redir,'scope'=>$scope,'response_type'=>'code','v'=>'5.199']);
     echo json_encode(['ok'=>true,'url'=>$url]); exit;
   }
   if ($a==='vk_auth_finish'){
@@ -228,7 +228,7 @@ if (isset($_GET['action'])) {
     if($code===''){ echo json_encode(['ok'=>false,'err'=>'пустой код']); exit; }
     if(!function_exists('curl_init')){ echo json_encode(['ok'=>false,'err'=>'нет curl']); exit; }
     $redir=(string)($vc['redirect_uri']??'https://oauth.vk.com/blank.html');
-    $ch=curl_init('https://oauth.vk.com/access_token?'.http_build_query(['client_id'=>$vc['client_id'],'client_secret'=>$vc['client_secret'],'redirect_uri'=>$redir,'code'=>$code]));
+    $ch=curl_init('https://oauth.vk.ru/access_token?'.http_build_query(['client_id'=>$vc['client_id'],'client_secret'=>$vc['client_secret'],'redirect_uri'=>$redir,'code'=>$code]));
     curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>30]); $res=curl_exec($ch); $cerr=curl_error($ch); curl_close($ch);
     if($res===false){ echo json_encode(['ok'=>false,'err'=>'сеть: '.($cerr?:'нет ответа')]); exit; }
     $j=json_decode($res,true);
