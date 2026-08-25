@@ -9,6 +9,20 @@ function read_json($f){ if(!file_exists($f)) return null; $c=(string)file_get_co
 function write_json($f,$d){ global $GUARD; $r=@file_put_contents($f, $GUARD.json_encode($d, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT), LOCK_EX); return $r!==false; }
 function tok(){ return bin2hex(random_bytes(8)); }
 
+// --- VK ID OAuth 2.1 (токен не привязан к IP, с обновлением) ---
+function vkid_call($params){ if(!function_exists('curl_init')) return [null,'']; $ch=curl_init('https://id.vk.ru/oauth2/auth'); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>30,CURLOPT_POSTFIELDS=>$params]); $r=curl_exec($ch); curl_close($ch); return [json_decode($r,true),$r]; }
+function vk_state_read(){ return read_json(__DIR__.'/vkstate.php') ?: []; }
+function vk_state_write($d){ return write_json(__DIR__.'/vkstate.php',$d); }
+function vk_valid_token($cfg){
+  $st=vk_state_read();
+  if(empty($st['access_token'])) return ['err'=>'VK не подключён — Настройки → «Подключить VK»'];
+  if((int)($st['expires_at']??0) > time()+60) return ['token'=>$st['access_token']];
+  if(empty($st['refresh_token'])) return ['err'=>'VK: сессия истекла, переподключите VK'];
+  [$j]=vkid_call(['grant_type'=>'refresh_token','refresh_token'=>$st['refresh_token'],'client_id'=>(string)($cfg['client_id']??''),'device_id'=>(string)($st['device_id']??''),'state'=>bin2hex(random_bytes(4)),'scope'=>'wall photos groups']);
+  if(!empty($j['access_token'])){ vk_state_write(['access_token'=>$j['access_token'],'refresh_token'=>($j['refresh_token']??$st['refresh_token']),'expires_at'=>time()+((int)($j['expires_in']??3500)),'device_id'=>($st['device_id']??'')]); return ['token'=>$j['access_token']]; }
+  return ['err'=>'VK: не удалось обновить токен — переподключите VK'];
+}
+
 // --- Генерация рекламных текстов через Claude API ---
 function ad_prompt($c){
   $name = trim((string)($c['name'] ?? ''));
@@ -81,6 +95,26 @@ if ($auth && isset($auth['hash']) && !isset($auth['users'])) { // миграци
 $users = $auth['users'] ?? [];
 $idx_by_login = function($login) use (&$users){ foreach($users as $i=>$u){ if(isset($u['login'])&&mb_strtolower($u['login'])===mb_strtolower(trim($login))) return $i; } return -1; };
 $idx_by_invite = function($t) use (&$users){ if(!$t) return -1; foreach($users as $i=>$u){ if(!empty($u['invite'])&&hash_equals((string)$u['invite'],(string)$t)) return $i; } return -1; };
+
+// ---------- VK ID OAuth callback (редирект от id.vk.ru с ?code=&state=&device_id=) ----------
+if (isset($_GET['code'], $_GET['state'])) {
+  if (empty($_SESSION['user']) || ($_SESSION['user']['role'] ?? '') !== 'admin') { header('Location: index.php'); exit; }
+  if (!defined('UCHET')) define('UCHET', 1);
+  $vc = @include __DIR__.'/vkconfig.php'; if (!is_array($vc)) $vc = [];
+  $vst = vk_state_read();
+  if (($vst['state'] ?? '') !== $_GET['state']) { header('Location: index.php?vk=badstate'); exit; }
+  $device_id = (string)($_GET['device_id'] ?? '');
+  [$vj, $vraw] = vkid_call([
+    'grant_type'=>'authorization_code', 'code'=>$_GET['code'], 'code_verifier'=>($vst['verifier'] ?? ''),
+    'client_id'=>(string)($vc['client_id'] ?? ''), 'device_id'=>$device_id,
+    'redirect_uri'=>(string)($vc['redirect_uri'] ?? ''), 'state'=>$_GET['state'],
+  ]);
+  if (!empty($vj['access_token'])) {
+    vk_state_write(['access_token'=>$vj['access_token'], 'refresh_token'=>($vj['refresh_token'] ?? ''), 'expires_at'=>time()+((int)($vj['expires_in'] ?? 3500)), 'device_id'=>$device_id]);
+    header('Location: index.php?vk=ok'); exit;
+  }
+  header('Location: index.php?vk=err&d='.urlencode(substr((string)($vj['error_description'] ?? $vraw), 0, 140))); exit;
+}
 
 // ---------- API ----------
 if (isset($_GET['action'])) {
@@ -190,13 +224,29 @@ if (isset($_GET['action'])) {
     if(!@move_uploaded_file($f['tmp_name'],$dir.'/'.$fn)){ echo json_encode(['ok'=>false,'err'=>'не записалось']); exit; }
     echo json_encode(['ok'=>true,'url'=>'uploads/'.$fn]); exit;
   }
+  if ($a==='vk_status'){ $vs=vk_state_read(); echo json_encode(['ok'=>true,'connected'=>!empty($vs['access_token'])]); exit; }
+  if ($a==='vk_auth_start'){
+    if($me['role']!=='admin'){ echo json_encode(['ok'=>false,'err'=>'только админ']); exit; }
+    $cfgf=__DIR__.'/vkconfig.php';
+    if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'нет vkconfig.php']); exit; }
+    if(!defined('UCHET')) define('UCHET',1);
+    $vc=@include $cfgf; if(!is_array($vc))$vc=[];
+    if(empty($vc['client_id'])||empty($vc['redirect_uri'])){ echo json_encode(['ok'=>false,'err'=>'в vkconfig.php нужны client_id и redirect_uri']); exit; }
+    $verifier=rtrim(strtr(base64_encode(random_bytes(48)),'+/','-_'),'=');
+    $challenge=rtrim(strtr(base64_encode(hash('sha256',$verifier,true)),'+/','-_'),'=');
+    $state=bin2hex(random_bytes(8));
+    $prev=vk_state_read(); $prev['verifier']=$verifier; $prev['state']=$state; vk_state_write($prev);
+    $url='https://id.vk.ru/authorize?'.http_build_query(['response_type'=>'code','client_id'=>$vc['client_id'],'redirect_uri'=>$vc['redirect_uri'],'scope'=>'wall photos groups','state'=>$state,'code_challenge'=>$challenge,'code_challenge_method'=>'S256']);
+    echo json_encode(['ok'=>true,'url'=>$url]); exit;
+  }
   if ($a==='vk_post'){
     $cfgf=__DIR__.'/vkconfig.php';
     if(!file_exists($cfgf)){ echo json_encode(['ok'=>false,'err'=>'VK не настроен (нет vkconfig.php)']); exit; }
     if(!defined('UCHET')) define('UCHET',1);
     $cfg=@include $cfgf; if(!is_array($cfg))$cfg=[];
-    $token=(string)($cfg['token']??''); $gid=(string)($cfg['group_id']??'');
-    if(!$token||!$gid){ echo json_encode(['ok'=>false,'err'=>'В vkconfig.php нет token или group_id']); exit; }
+    $gid=(string)($cfg['group_id']??'');
+    if(!$gid){ echo json_encode(['ok'=>false,'err'=>'В vkconfig.php нет group_id']); exit; }
+    $tk=vk_valid_token($cfg); if(isset($tk['err'])){ echo json_encode(['ok'=>false,'err'=>$tk['err']]); exit; } $token=$tk['token'];
     $text=trim((string)($in['text']??'')); if($text===''){ echo json_encode(['ok'=>false,'err'=>'пустой текст']); exit; }
     $V='5.199';
     $vk=function($method,$params) use($token,$V){ $params['access_token']=$token; $params['v']=$V; $ch=curl_init('https://api.vk.com/method/'.$method); curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>45,CURLOPT_POSTFIELDS=>$params]); $r=curl_exec($ch); $e=curl_error($ch); curl_close($ch); return [json_decode($r,true),$r,$e]; };
@@ -496,6 +546,12 @@ async function doActivate(){err.textContent='';const p=pw.value,p2=pw2.value;if(
 
   <div id="pane-settings" class="hide">
     <div class="card">
+      <h3 style="margin:0 0 10px;font-size:16px">Публикация в VK</h3>
+      <p class="muted" id="vk_status_txt" style="font-size:13px;margin:0 0 10px">Проверяю подключение…</p>
+      <button class="btn" onclick="connectVk()">Подключить / переподключить VK</button>
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0">Один раз авторизуешь своё VK-приложение — дальше кабинет постит фото и видео на стену сообщества сам, токен обновляется автоматически.</p>
+    </div>
+    <div class="card">
       <h3 style="margin:0 0 12px;font-size:16px">Категории расходов</h3>
       <div class="frm" style="grid-template-columns:1fr auto">
         <div><label>Новая категория</label><input id="cat_new" placeholder="напр. Реклама / площадка" onkeydown="if(event.key==='Enter')addCat()"></div>
@@ -567,7 +623,7 @@ function editCar(id){const c=DATA.cars.find(x=>x.id===id);if(!c)return;const el=
 function delCar(id){if(!confirm('Удалить авто?'))return;DATA.cars=DATA.cars.filter(c=>c.id!==id);renderCars();save();}
 function addExp(){const g=id=>document.getElementById(id);const a=+g('e_amount').value||0;if(!a){g('e_amount').focus();return;}const cur=g('e_cur').value;const rate=cur==='RUB'?1:(+g('e_rate').value||0);if(cur!=='RUB'&&!rate){g('e_rate').focus();return;}const item={id:uid(),date:g('e_date').value,cat:g('e_cat').value,amount:a,currency:cur,rate:rate,note:g('e_note').value.trim()};item.rub=curRub(item);DATA.expenses.unshift(item);g('e_amount').value='';g('e_note').value='';expCalc();renderExp();save();}
 function delExp(id){if(!confirm('Удалить расход?'))return;DATA.expenses=DATA.expenses.filter(e=>e.id!==id);renderExp();save();}
-function tab(t){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.t===t));document.getElementById('pane-cars').classList.toggle('hide',t!=='cars');document.getElementById('pane-exp').classList.toggle('hide',t!=='exp');const pu=document.getElementById('pane-users');if(pu)pu.classList.toggle('hide',t!=='users');const ps=document.getElementById('pane-settings');if(ps)ps.classList.toggle('hide',t!=='settings');if(t==='users')loadUsers();if(t==='settings')renderCats();}
+function tab(t){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.t===t));document.getElementById('pane-cars').classList.toggle('hide',t!=='cars');document.getElementById('pane-exp').classList.toggle('hide',t!=='exp');const pu=document.getElementById('pane-users');if(pu)pu.classList.toggle('hide',t!=='users');const ps=document.getElementById('pane-settings');if(ps)ps.classList.toggle('hide',t!=='settings');if(t==='users')loadUsers();if(t==='settings'){renderCats();vkStatus();}}
 function showInvite(login,token){const box=document.getElementById('invbox');box.classList.remove('hide');const url=INVBASE+'?invite='+token;box.innerHTML='Ссылка для установки пароля для <b>'+esc(login)+'</b> (отправьте её пользователю):<code id="invurl">'+esc(url)+'</code><button class="btn btn-sm" onclick="copyInv()">Скопировать ссылку</button>';}
 function copyInv(){const t=document.getElementById('invurl').textContent;navigator.clipboard.writeText(t).then(()=>{},()=>{});const b=event.target;b.textContent='Скопировано ✓';setTimeout(()=>b.textContent='Скопировать ссылку',1500);}
 async function loadUsers(){const r=await api('users_list');if(!r.ok)return;const b=document.getElementById('users-body');b.innerHTML='';r.users.forEach(u=>{const tr=document.createElement('tr');const status=u.pending?'<span class="badge pend">ожидает пароль</span>':'<span class="badge user">активен</span>';const acts=(u.pending&&u.invite?`<button class="btn-ghost btn-sm" onclick="showInvite('${esc(u.login)}','${esc(u.invite)}')">Ссылка</button> `:`<button class="btn-ghost btn-sm" onclick="resetUser('${esc(u.login)}')">Сбросить пароль</button> `)+`<button class="del" onclick="delUser('${esc(u.login)}')">✕</button>`;tr.innerHTML=`<td>${esc(u.name)}</td><td>${esc(u.login)}</td><td><span class="badge ${u.role}">${u.role==='admin'?'Админ':'Пользователь'}</span></td><td>${status}</td><td>${acts}</td>`;b.appendChild(tr);});}
@@ -601,13 +657,15 @@ function saveAds(){adData[adTabCur]=document.getElementById('ad_text').value;con
 let TGCONF=null;
 async function tgConf(){if(TGCONF)return TGCONF;const r=await api('tg_conf');if(r.ok){TGCONF={token:r.token,chat:r.chat};return TGCONF;}return null;}
 function tgUrl(p){p=String(p);if(/^https?:/i.test(p))return p;return location.origin+'/uchet/'+p.replace(/^\/uchet\//,'').replace(/^\//,'');}
+async function vkStatus(){const el=document.getElementById('vk_status_txt');if(!el)return;const r=await api('vk_status');if(r&&r.ok)el.innerHTML=r.connected?'<b style="color:var(--good)">VK подключён ✓</b> — постинг фото/видео на стену работает.':'VK не подключён. Нажмите кнопку ниже и пройдите «Разрешить».';}
+async function connectVk(){const r=await api('vk_auth_start');if(r&&r.ok&&r.url){window.open(r.url,'_blank');}else{alert('Не удалось начать подключение VK: '+((r&&r.err)||''));}}
 async function postVk(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);const text=(adData.vk||'').trim()||document.getElementById('ad_text').value.trim();const hint=document.getElementById('ad_hint');if(!text){hint.textContent='Сначала текст на вкладке VK';return;}const photos=c?carPhotos(c):[];if(!confirm('Опубликовать пост'+(photos.length?(' с '+photos.length+' фото'):' без фото')+' в сообщество VK?'))return;hint.textContent='Публикую в VK…';const r=await api('vk_post',{text:text,photos:photos});hint.textContent=r.ok?('Опубликовано в VK ✓'+(r.warn?(' (фото: '+r.warn+')'):'')):('Ошибка — '+(r.err||''));}
 async function postTelegram(){adData[adTabCur]=document.getElementById('ad_text').value;const c=DATA.cars.find(x=>x.id===adCarId);const text=(adData.telegram||'').trim()||document.getElementById('ad_text').value.trim();const hint=document.getElementById('ad_hint');if(!text){hint.textContent='Сначала текст на вкладке Telegram';return;}const conf=await tgConf();if(!conf||!conf.token||!conf.chat){hint.textContent='Telegram-бот не настроен (tgconfig.php)';return;}const items=[];(c?carPhotos(c):[]).forEach(u=>items.push({url:u,type:'photo'}));(c?carVideos(c):[]).forEach(u=>items.push({url:u,type:'video'}));const media=items.slice(0,10);if(!confirm('Опубликовать пост'+(media.length?(' с '+media.length+' медиа'):' без медиа')+' в Telegram-канал '+conf.chat+'?'))return;hint.textContent='Публикую в Telegram…';try{const files=[];for(const m of media){try{const rr=await fetch(tgUrl(m.url));if(rr.ok)files.push({blob:await rr.blob(),type:m.type});}catch(e){}}const base='https://api.telegram.org/bot'+conf.token+'/';let j;if(files.length===0){const fd=new FormData();fd.append('chat_id',conf.chat);fd.append('text',text);j=await (await fetch(base+'sendMessage',{method:'POST',body:fd})).json();}else if(files.length===1){const f=files[0];const fd=new FormData();fd.append('chat_id',conf.chat);fd.append('caption',text.slice(0,1024));if(f.type==='video'){fd.append('video',f.blob,'v.mp4');j=await (await fetch(base+'sendVideo',{method:'POST',body:fd})).json();}else{fd.append('photo',f.blob,'p.jpg');j=await (await fetch(base+'sendPhoto',{method:'POST',body:fd})).json();}}else{const fd=new FormData();fd.append('chat_id',conf.chat);const mg=files.map((f,i)=>{const key='m'+i;fd.append(key,f.blob,key+(f.type==='video'?'.mp4':'.jpg'));const o={type:f.type,media:'attach://'+key};if(i===0)o.caption=text.slice(0,1024);return o;});fd.append('media',JSON.stringify(mg));j=await (await fetch(base+'sendMediaGroup',{method:'POST',body:fd})).json();}hint.textContent=(j&&j.ok)?'Опубликовано в Telegram ✓':('Ошибка — Telegram: '+((j&&j.description)||'неизвестно'));}catch(e){hint.textContent='Ошибка: '+e.message;}}
 function renderCatSelect(){const sel=document.getElementById('e_cat');if(!sel)return;const cur=sel.value;sel.innerHTML='';(DATA.categories||[]).forEach(c=>{const o=document.createElement('option');o.textContent=c;sel.appendChild(o);});if(cur&&(DATA.categories||[]).includes(cur))sel.value=cur;}
 function renderCats(){const box=document.getElementById('cats-list');if(!box)return;box.innerHTML='';(DATA.categories||[]).forEach((c,i)=>{const chip=document.createElement('span');chip.className='badge user';chip.style.cssText='display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:6px 10px';chip.innerHTML=esc(c)+' <button class="del" style="font-size:14px;padding:0 2px" onclick="delCat('+i+')">✕</button>';box.appendChild(chip);});}
 function addCat(){const inp=document.getElementById('cat_new');const v=inp.value.trim();if(!v)return;if(!DATA.categories)DATA.categories=[];if(DATA.categories.some(c=>c.toLowerCase()===v.toLowerCase())){alert('Такая категория уже есть');return;}DATA.categories.push(v);inp.value='';renderCats();renderCatSelect();save();}
 function delCat(i){const c=(DATA.categories||[])[i];if(c==null)return;if(!confirm('Удалить категорию «'+c+'»?'))return;DATA.categories.splice(i,1);renderCats();renderCatSelect();save();}
-(async()=>{const r=await api('load');if(r.ok){DATA=r.data;if(!DATA.cars)DATA.cars=[];if(!DATA.expenses)DATA.expenses=[];}DATA.cars.forEach(migrateCar);if(!Array.isArray(DATA.categories)||!DATA.categories.length)DATA.categories=['Реклама / площадка','Домен+хостинг','Логистика','Зарплата','Комиссии','Прочее'];renderCars();renderExp();renderCatSelect();if(IS_ADMIN)renderCats();const t=new Date().toISOString().slice(0,10);document.getElementById('c_date').value=t;document.getElementById('e_date').value=t;document.getElementById('e_cur').innerHTML=CUR.map(p=>`<option value="${p[0]}">${p[1]}</option>`).join('');expCurChange();})();
+(async()=>{const r=await api('load');if(r.ok){DATA=r.data;if(!DATA.cars)DATA.cars=[];if(!DATA.expenses)DATA.expenses=[];}DATA.cars.forEach(migrateCar);if(!Array.isArray(DATA.categories)||!DATA.categories.length)DATA.categories=['Реклама / площадка','Домен+хостинг','Логистика','Зарплата','Комиссии','Прочее'];renderCars();renderExp();renderCatSelect();if(IS_ADMIN)renderCats();const t=new Date().toISOString().slice(0,10);document.getElementById('c_date').value=t;document.getElementById('e_date').value=t;document.getElementById('e_cur').innerHTML=CUR.map(p=>`<option value="${p[0]}">${p[1]}</option>`).join('');expCurChange();const vkp=new URLSearchParams(location.search).get('vk');if(vkp){setTimeout(()=>{alert(vkp==='ok'?'VK подключён ✓ — теперь фото/видео постятся на стену.':(vkp==='badstate'?'VK: истекла сессия подключения, попробуйте ещё раз.':'VK: подключение не удалось — попробуйте ещё раз.'));history.replaceState(null,'',location.pathname);},150);}})();
 </script>
 <?php endif; ?>
 </body></html>
