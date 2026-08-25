@@ -15,10 +15,9 @@ function vk_state_read(){ return read_json(__DIR__.'/vkstate.php') ?: []; }
 function vk_state_write($d){ return write_json(__DIR__.'/vkstate.php',$d); }
 function vk_valid_token($cfg){
   $st=vk_state_read();
-  if(empty($st['access_token'])) return ['err'=>'VK не подключён — Настройки → «Подключить VK»'];
-  $exp=(int)($st['expires_at']??0);
-  if($exp!==0 && $exp < time()+30) return ['err'=>'VK: токен истёк, переподключите VK (Настройки)'];
-  return ['token'=>$st['access_token']];
+  if(!empty($st['access_token'])){ $exp=(int)($st['expires_at']??0); if($exp===0||$exp>=time()+30) return ['token'=>$st['access_token']]; }
+  if(!empty($cfg['token'])) return ['token'=>(string)$cfg['token']]; // запасной статический токен (community — только текст, фото не грузит)
+  return ['err'=>'VK не подключён — Настройки → «Подключить VK» (или впишите token в vkconfig)'];
 }
 
 // --- Генерация рекламных текстов через Claude API ---
