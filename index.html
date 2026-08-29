@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <!-- serkin-landing build 20260819-f -->
-<meta name="build" content="20260823-stock">
+<meta name="build" content="20260826-legal">
 <title>Серкин · Авто под ключ</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Пригоняю авто под ключ из Китая, Кореи и США — из Иркутска. Подбор, проверка (Carfax/ЛКП), доставка, растаможка, утиль, вручение ключей у подъезда. Цена под ключ известна заранее. Расчёт бесплатно — Евгений Серкин.">
@@ -508,6 +508,7 @@ _tmr.push({id: "3788808", type: "pageView", start: (new Date()).getTime()});
           <a class="msg" href="https://max.ru/join/t4GjM-3J5VsO6M4S8BWDGQ_lBunhmBU-XGwA7WsIHw8" target="_blank" rel="noopener">MAX · Евгений Серкин</a>
           <a class="msg" href="https://instagram.com/serkin_evgeny">Instagram</a>
         </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px">Нажимая на кнопку связи, вы соглашаетесь с <a href="#" onclick="openPolicy();return false;" style="color:inherit;text-decoration:underline">Политикой конфиденциальности</a> и обработкой персональных данных.</p>
       </div>
     </div>
   </section>
@@ -516,8 +517,51 @@ _tmr.push({id: "3788808", type: "pageView", start: (new Date()).getTime()});
 <footer>
   <div class="wrap foot">
     <div>© 2026 Евгений Серкин · Авто под ключ · Китай · Америка · Корея · Япония</div>
+    <div style="margin-top:12px;font-size:12.5px;color:var(--muted);line-height:1.7">
+      Оператор персональных данных: Серкин Евгений Аркадьевич · ИНН 381000342478 · г. Иркутск, ул. Ржанова, д. 166 · <a href="mailto:perkins@mail.ru" style="color:inherit">perkins@mail.ru</a><br>
+      <a href="#" onclick="openPolicy();return false;" style="color:inherit;text-decoration:underline">Политика конфиденциальности</a>
+    </div>
   </div>
 </footer>
+
+<!-- Cookie-уведомление -->
+<div id="cookieBar" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:60;background:var(--ink);color:var(--bg);padding:14px 0;font-size:13.5px;line-height:1.5;box-shadow:0 -4px 24px rgba(0,0,0,.18)">
+  <div class="wrap" style="display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+    <div style="max-width:74ch">Мы используем файлы cookie и сервисы аналитики (Яндекс.Метрика, VK) для работы сайта и оценки эффективности рекламы. Продолжая пользоваться сайтом, вы соглашаетесь с этим и с <a href="#" onclick="openPolicy();return false;" style="color:var(--accent);text-decoration:underline">Политикой конфиденциальности</a>.</div>
+    <button onclick="acceptCookies()" style="background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 24px;font-weight:700;cursor:pointer;white-space:nowrap">Принять</button>
+  </div>
+</div>
+
+<!-- Политика конфиденциальности -->
+<div id="policyModal" style="display:none;position:fixed;inset:0;z-index:70;background:rgba(20,15,10,.6);padding:16px;overflow:auto">
+  <div style="background:var(--card,#fff);color:var(--ink);max-width:820px;margin:24px auto;border-radius:16px;padding:26px clamp(18px,4vw,40px);box-shadow:0 24px 70px rgba(0,0,0,.35)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px">
+      <h2 style="margin:0;font-size:clamp(19px,3vw,25px)">Политика в отношении обработки персональных данных</h2>
+      <button onclick="closePolicy()" style="background:transparent;border:0;font-size:28px;line-height:1;cursor:pointer;color:var(--muted)">×</button>
+    </div>
+    <div style="font-size:14px;line-height:1.65">
+      <p style="color:var(--muted);font-size:12.5px">Редакция от 26.08.2026</p>
+      <p><b>1. Общие положения.</b> Настоящая Политика определяет порядок обработки и защиты персональных данных пользователей сайта serkinauto.ru (далее — Сайт). Оператор: физическое лицо Серкин Евгений Аркадьевич, ИНН 381000342478, адрес: г. Иркутск, ул. Ржанова, д. 166, e-mail: perkins@mail.ru (далее — Оператор). Используя Сайт, пользователь выражает согласие с настоящей Политикой; при несогласии — просим воздержаться от использования Сайта.</p>
+      <p><b>2. Какие данные обрабатываются.</b><br>2.1. Данные, которые пользователь предоставляет добровольно при обращении (в том числе через мессенджеры Telegram, MAX, сообщество и рекламные лид-формы VK): имя, номер телефона, контакт в мессенджере, содержание обращения.<br>2.2. Данные, собираемые автоматически при посещении Сайта с помощью cookie и сервисов веб-аналитики (Яндекс.Метрика, VK / Top.Mail.Ru): IP-адрес, сведения о браузере и устройстве, источник перехода, действия на Сайте, файлы cookie.</p>
+      <p><b>3. Цели обработки.</b> Ответ на обращения и связь с пользователем; расчёт стоимости и оказание услуг по подбору и доставке автомобилей; ведение статистики и улучшение работы Сайта; оценка эффективности рекламы.</p>
+      <p><b>4. Правовые основания.</b> Согласие субъекта персональных данных; необходимость исполнения договора/обращения по инициативе пользователя; п.5 ч.1 ст.6 152-ФЗ.</p>
+      <p><b>5. Cookie и аналитика.</b> Сайт использует cookie для корректной работы и аналитики (Яндекс.Метрика, VK). Пользователь может отключить cookie в настройках браузера — при этом отдельные функции Сайта могут работать некорректно. Отказаться от сбора данных аналитикой можно средствами соответствующих сервисов и браузера.</p>
+      <p><b>6. Передача третьим лицам и хранение.</b> Данные обрабатываются на серверах, расположенных на территории Российской Федерации (локализация по ч.5 ст.18 152-ФЗ). Для аналитики данные передаются ООО «ЯНДЕКС» и VK (сервис Top.Mail.Ru) в обезличенном виде. При обращении пользователя через мессенджеры (в т.ч. Telegram) передача данных в эти сервисы осуществляется по инициативе самого пользователя. Оператор не продаёт и не передаёт данные третьим лицам в иных целях.</p>
+      <p><b>7. Сроки хранения.</b> Персональные данные хранятся не дольше, чем этого требуют цели обработки, либо до отзыва согласия субъектом. Обезличенные статистические данные могут храниться бессрочно.</p>
+      <p><b>8. Права субъекта.</b> Пользователь вправе получить сведения об обработке своих данных, требовать их уточнения, блокирования или удаления, а также отозвать согласие, направив обращение на e-mail: perkins@mail.ru. Оператор рассматривает обращение в установленные законом сроки.</p>
+      <p><b>9. Защита данных.</b> Оператор принимает необходимые правовые, организационные и технические меры для защиты персональных данных от неправомерного доступа, изменения, распространения и уничтожения.</p>
+      <p><b>10. Изменения.</b> Оператор вправе изменять настоящую Политику. Актуальная редакция размещается на Сайте.</p>
+    </div>
+    <div style="text-align:right;margin-top:18px"><button onclick="closePolicy()" style="background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 24px;font-weight:700;cursor:pointer">Понятно</button></div>
+  </div>
+</div>
+
+<script>
+function openPolicy(){document.getElementById('policyModal').style.display='block';document.body.style.overflow='hidden';}
+function closePolicy(){document.getElementById('policyModal').style.display='none';document.body.style.overflow='';}
+function acceptCookies(){try{localStorage.setItem('cookieOk','1');}catch(e){}var b=document.getElementById('cookieBar');if(b)b.style.display='none';}
+(function(){var show=true;try{show=!localStorage.getItem('cookieOk');}catch(e){}if(show){var b=document.getElementById('cookieBar');if(b)b.style.display='block';}})();
+</script>
 
 <script>
 (function(){
